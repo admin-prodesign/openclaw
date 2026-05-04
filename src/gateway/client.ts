@@ -13,7 +13,10 @@ import {
   publicKeyRawBase64UrlFromPem,
   signDevicePayload,
 } from "../infra/device-identity.js";
-import { dangerouslyBypassManagedProxyForGatewayLoopbackControlPlane } from "../infra/net/proxy/proxy-lifecycle.js";
+import {
+  dangerouslyBypassManagedProxyForGatewayLoopbackControlPlane,
+  type ProxyLoopbackMode,
+} from "../infra/net/proxy/proxy-lifecycle.js";
 import { normalizeFingerprint } from "../infra/tls/fingerprint.js";
 import { rawDataToString } from "../infra/ws.js";
 import { logDebug, logError } from "../logger.js";
@@ -135,6 +138,7 @@ export type GatewayClientOptions = {
   tickWatchMinIntervalMs?: number;
   requestTimeoutMs?: number;
   token?: string;
+  proxyLoopbackMode?: ProxyLoopbackMode;
   bootstrapToken?: string;
   deviceToken?: string;
   password?: string;
@@ -292,7 +296,11 @@ export class GatewayClient {
       return;
     }
     // Allow node screen snapshots and other large responses.
-    const directAgent = createDirectGatewayAgent(url);
+    if (this.opts.proxyLoopbackMode === "block" && createDirectGatewayAgent(url)) {
+      throw new Error("Gateway loopback connection blocked by proxy.loopbackMode");
+    }
+    const directAgent =
+      this.opts.proxyLoopbackMode === "proxy" ? undefined : createDirectGatewayAgent(url);
     const wsOptions: FingerprintCheckingClientOptions = {
       maxPayload: 25 * 1024 * 1024,
       ...(directAgent ? { agent: directAgent } : {}),
@@ -322,7 +330,10 @@ export class GatewayClient {
     }
     const createWebSocket = () => new WebSocket(url, wsOptions as ClientOptions);
     const ws = directAgent
-      ? dangerouslyBypassManagedProxyForGatewayLoopbackControlPlane(url, createWebSocket)
+      ? dangerouslyBypassManagedProxyForGatewayLoopbackControlPlane(
+          { actualUrl: url, expectedGatewayUrl: url, loopbackMode: this.opts.proxyLoopbackMode },
+          createWebSocket,
+        )
       : createWebSocket();
     this.ws = ws;
     this.socketOpened = false;

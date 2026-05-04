@@ -520,6 +520,7 @@ describe("GatewayChatClient", () => {
       url: "ws://127.0.0.1:18789",
       token: "test-token",
       preauthHandshakeTimeoutMs: 30_000,
+      proxyLoopbackMode: "proxy",
       allowInsecureLocalOperatorUi: true,
     });
 
@@ -539,6 +540,29 @@ describe("GatewayChatClient", () => {
       (client as unknown as { client: { opts: { preauthHandshakeTimeoutMs?: number } } }).client
         .opts.preauthHandshakeTimeoutMs,
     ).toBe(30_000);
+    expect(
+      (client as unknown as { client: { opts: { proxyLoopbackMode?: string } } }).client.opts
+        .proxyLoopbackMode,
+    ).toBe("proxy");
+  });
+
+  it("surfaces loopback block-mode start failures through disconnect handler", async () => {
+    vi.useFakeTimers();
+    const onDisconnected = vi.fn();
+    const client = new GatewayChatClient({
+      url: "ws://127.0.0.1:18789",
+      token: "test-token",
+      proxyLoopbackMode: "block",
+      allowInsecureLocalOperatorUi: true,
+    });
+    client.onDisconnected = onDisconnected;
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(2);
+
+    expect(onDisconnected).toHaveBeenCalledWith(
+      expect.stringContaining("blocked by proxy.loopbackMode"),
+    );
   });
 
   it("retries startup-unavailable chat history until the gateway finishes booting", async () => {

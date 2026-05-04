@@ -33,8 +33,10 @@ class MockWebSocket {
   terminateCalls = 0;
   autoCloseOnClose = true;
   readyState = MockWebSocket.CONNECTING;
+  readonly options: unknown;
 
-  constructor(_url: string, _options?: unknown) {
+  constructor(_url: string, options?: unknown) {
+    this.options = options;
     wsInstances.push(this);
   }
 
@@ -232,6 +234,36 @@ describe("GatewayClient security checks", () => {
 
     expect(onConnectError).not.toHaveBeenCalled();
     expect(wsInstances.length).toBe(1); // WebSocket created
+    expect(getLatestWs().options).toMatchObject({ agent: expect.any(Object) });
+    client.stop();
+  });
+
+  it("proxies ws:// loopback addresses when proxyLoopbackMode is proxy", () => {
+    const onConnectError = vi.fn();
+    const client = new GatewayClient({
+      url: "ws://127.0.0.1:18789",
+      proxyLoopbackMode: "proxy",
+      onConnectError,
+    });
+
+    client.start();
+
+    expect(onConnectError).not.toHaveBeenCalled();
+    expect(wsInstances.length).toBe(1);
+    expect(getLatestWs().options).not.toMatchObject({ agent: expect.any(Object) });
+    client.stop();
+  });
+
+  it("blocks ws:// loopback addresses when proxyLoopbackMode is block", () => {
+    const onConnectError = vi.fn();
+    const client = new GatewayClient({
+      url: "ws://127.0.0.1:18789",
+      proxyLoopbackMode: "block",
+      onConnectError,
+    });
+
+    expect(() => client.start()).toThrow("blocked by proxy.loopbackMode");
+    expect(wsInstances.length).toBe(0);
     client.stop();
   });
 

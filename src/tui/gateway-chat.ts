@@ -8,7 +8,11 @@ import {
   resolveExplicitGatewayAuth,
 } from "../gateway/call.js";
 import { startGatewayClientWhenEventLoopReady } from "../gateway/client-start-readiness.js";
-import { GatewayClient, GatewayClientRequestError } from "../gateway/client.js";
+import {
+  GatewayClient,
+  type GatewayClientOptions,
+  GatewayClientRequestError,
+} from "../gateway/client.js";
 import { isLoopbackHost } from "../gateway/net.js";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -51,7 +55,8 @@ type ResolvedGatewayConnection = {
   token?: string;
   password?: string;
   preauthHandshakeTimeoutMs?: number;
-  allowInsecureLocalOperatorUi?: boolean;
+  proxyLoopbackMode?: GatewayClientOptions["proxyLoopbackMode"];
+  allowInsecureLocalOperatorUi: boolean;
 };
 
 function throwGatewayAuthResolutionError(reason: string): never {
@@ -120,6 +125,7 @@ export class GatewayChatClient implements TuiBackend {
       token: connection.token,
       password: connection.password,
       preauthHandshakeTimeoutMs: connection.preauthHandshakeTimeoutMs,
+      proxyLoopbackMode: connection.proxyLoopbackMode,
       clientName: GATEWAY_CLIENT_NAMES.TUI,
       clientDisplayName: "openclaw-tui",
       clientVersion: VERSION,
@@ -163,11 +169,15 @@ export class GatewayChatClient implements TuiBackend {
   start() {
     void startGatewayClientWhenEventLoopReady(this.client, {
       clientOptions: { preauthHandshakeTimeoutMs: this.connection.preauthHandshakeTimeoutMs },
-    }).then((readiness) => {
-      if (!readiness.ready && !readiness.aborted) {
-        this.onDisconnected?.("gateway event loop readiness timeout");
-      }
-    });
+    })
+      .then((readiness) => {
+        if (!readiness.ready && !readiness.aborted) {
+          this.onDisconnected?.("gateway event loop readiness timeout");
+        }
+      })
+      .catch((err: unknown) => {
+        this.onDisconnected?.(err instanceof Error ? err.message : String(err));
+      });
   }
 
   stop() {
@@ -295,6 +305,7 @@ export async function resolveGatewayConnection(
       token: explicitAuth.token,
       password: explicitAuth.password,
       preauthHandshakeTimeoutMs: config.gateway?.handshakeTimeoutMs,
+      proxyLoopbackMode: config.proxy?.loopbackMode,
       allowInsecureLocalOperatorUi,
     };
   }
@@ -314,6 +325,7 @@ export async function resolveGatewayConnection(
       token: resolved.token,
       password: resolved.password,
       preauthHandshakeTimeoutMs: config.gateway?.handshakeTimeoutMs,
+      proxyLoopbackMode: config.proxy?.loopbackMode,
       allowInsecureLocalOperatorUi: false,
     };
   }
@@ -330,6 +342,7 @@ export async function resolveGatewayConnection(
       token: resolved.token,
       password: resolved.password,
       preauthHandshakeTimeoutMs: config.gateway?.handshakeTimeoutMs,
+      proxyLoopbackMode: config.proxy?.loopbackMode,
       allowInsecureLocalOperatorUi,
     };
   }

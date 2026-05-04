@@ -49,6 +49,7 @@ export async function createOperatorApprovalsGatewayClient(
     token: bootstrap.auth.token,
     password: bootstrap.auth.password,
     preauthHandshakeTimeoutMs: bootstrap.preauthHandshakeTimeoutMs,
+    proxyLoopbackMode: params.config.proxy?.loopbackMode,
     clientName: GATEWAY_CLIENT_NAMES.GATEWAY_CLIENT,
     clientDisplayName: params.clientDisplayName,
     mode: GATEWAY_CLIENT_MODES.BACKEND,

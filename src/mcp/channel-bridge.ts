@@ -118,6 +118,7 @@ export class OpenClawChannelBridge {
       token: bootstrap.auth.token,
       password: bootstrap.auth.password,
       preauthHandshakeTimeoutMs: bootstrap.preauthHandshakeTimeoutMs,
+      proxyLoopbackMode: this.cfg.proxy?.loopbackMode,
       clientName: GATEWAY_CLIENT_NAMES.CLI,
       clientDisplayName: "OpenClaw MCP",
       clientVersion: VERSION,

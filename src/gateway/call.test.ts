@@ -46,6 +46,7 @@ let lastClientOptions: {
   password?: string;
   tlsFingerprint?: string;
   preauthHandshakeTimeoutMs?: number;
+  proxyLoopbackMode?: string;
   clientName?: string;
   clientDisplayName?: string;
   mode?: string;
@@ -642,6 +643,39 @@ describe("callGateway url resolution", () => {
     await promise;
 
     expect(startCalls).toBe(1);
+  });
+
+  it("passes proxy loopback mode from provided config to the Gateway client", async () => {
+    const promise = callGateway({
+      method: "health",
+      config: {
+        gateway: {
+          url: "ws://127.0.0.1:18789",
+        },
+        proxy: {
+          loopbackMode: "proxy",
+        },
+      },
+    });
+
+    await promise;
+
+    expect(lastClientOptions?.proxyLoopbackMode).toBe("proxy");
+  });
+
+  it("passes proxy loopback mode from loaded config to the Gateway client", async () => {
+    __testing.setDepsForTests({
+      getRuntimeConfig: () => ({
+        gateway: { url: "ws://127.0.0.1:18789" },
+        proxy: { loopbackMode: "block" },
+      }),
+    });
+
+    const promise = callGateway({ method: "health" });
+
+    await promise;
+
+    expect(lastClientOptions?.proxyLoopbackMode).toBe("block");
   });
 });
 

@@ -601,6 +601,7 @@ async function executeGatewayRequestWithScopes<T>(params: {
   password?: string;
   tlsFingerprint?: string;
   preauthHandshakeTimeoutMs?: number;
+  proxyLoopbackMode?: GatewayClientOptions["proxyLoopbackMode"];
   timeoutMs: number;
   safeTimerTimeoutMs: number;
   connectionDetails: GatewayConnectionDetails;
@@ -613,6 +614,7 @@ async function executeGatewayRequestWithScopes<T>(params: {
     password,
     tlsFingerprint,
     preauthHandshakeTimeoutMs,
+    proxyLoopbackMode,
     timeoutMs,
     safeTimerTimeoutMs,
   } = params;
@@ -656,6 +658,7 @@ async function executeGatewayRequestWithScopes<T>(params: {
           : opts.deviceIdentity,
       minProtocol: opts.minProtocol ?? PROTOCOL_VERSION,
       maxProtocol: opts.maxProtocol ?? PROTOCOL_VERSION,
+      proxyLoopbackMode,
       onHelloOk: async (hello) => {
         try {
           ensureGatewaySupportsRequiredMethods({
@@ -761,6 +764,7 @@ async function callGatewayWithScopes<T = Record<string, unknown>>(
     password,
     tlsFingerprint,
     preauthHandshakeTimeoutMs: context.config.gateway?.handshakeTimeoutMs,
+    proxyLoopbackMode: context.config.proxy?.loopbackMode,
     timeoutMs,
     safeTimerTimeoutMs,
     connectionDetails,

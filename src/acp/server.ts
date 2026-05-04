@@ -60,6 +60,7 @@ export async function serveAcpGateway(opts: AcpServerOptions = {}): Promise<void
     token: bootstrap.auth.token,
     password: bootstrap.auth.password,
     preauthHandshakeTimeoutMs: bootstrap.preauthHandshakeTimeoutMs,
+    proxyLoopbackMode: cfg.proxy?.loopbackMode,
     clientName: GATEWAY_CLIENT_NAMES.CLI,
     clientDisplayName: "ACP",
     clientVersion: "acp",

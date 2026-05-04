@@ -224,6 +224,7 @@ export async function runNodeHost(opts: NodeHostRunOptions): Promise<void> {
     token: token || undefined,
     password: password || undefined,
     preauthHandshakeTimeoutMs: cfg.gateway?.handshakeTimeoutMs,
+    proxyLoopbackMode: cfg.proxy?.loopbackMode,
     instanceId: nodeId,
     clientName: GATEWAY_CLIENT_NAMES.NODE_HOST,
     clientDisplayName: displayName,
