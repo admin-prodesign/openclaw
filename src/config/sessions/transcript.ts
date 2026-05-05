@@ -1,12 +1,7 @@
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { SessionManager } from "@mariozechner/pi-coding-agent";
-import {
-  acquireSessionWriteLock,
-  resolveSessionWriteLockAcquireTimeoutMs,
-  type SessionWriteLockAcquireTimeoutConfig,
-} from "../../agents/session-write-lock.js";
+import { type SessionWriteLockAcquireTimeoutConfig } from "../../agents/session-write-lock.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { extractAssistantVisibleText } from "../../shared/chat-message-content.js";
@@ -19,43 +14,16 @@ import {
 import { resolveAndPersistSessionFile } from "./session-file.js";
 import { loadSessionStore, normalizeStoreSessionKey } from "./store.js";
 import { parseSessionThreadInfo } from "./thread-info.js";
-import {
-  appendSessionTranscriptMessage,
-  type TranscriptRawAppendParentLink,
-  resolveTranscriptRawAppendParentLink,
-} from "./transcript-append.js";
+import { appendSessionTranscriptMessage } from "./transcript-append.js";
 import { resolveMirroredTranscriptText } from "./transcript-mirror.js";
 import type { SessionEntry } from "./types.js";
 
 let piCodingAgentModulePromise: Promise<typeof import("@mariozechner/pi-coding-agent")> | null =
   null;
-const blockedUserAppendQueues = new Map<string, Promise<void>>();
 
 async function loadPiCodingAgentModule(): Promise<typeof import("@mariozechner/pi-coding-agent")> {
   piCodingAgentModulePromise ??= import("@mariozechner/pi-coding-agent");
   return await piCodingAgentModulePromise;
-}
-
-async function withBlockedUserAppendQueue<T>(
-  sessionFile: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  const previous = blockedUserAppendQueues.get(sessionFile) ?? Promise.resolve();
-  let release: (() => void) | undefined;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const next = previous.catch(() => {}).then(() => current);
-  blockedUserAppendQueues.set(sessionFile, next);
-  await previous.catch(() => {});
-  try {
-    return await run();
-  } finally {
-    release?.();
-    if (blockedUserAppendQueues.get(sessionFile) === next) {
-      blockedUserAppendQueues.delete(sessionFile);
-    }
-  }
 }
 
 async function ensureSessionHeader(params: {
@@ -333,153 +301,6 @@ export async function appendExactAssistantMessageToSessionTranscript(params: {
       break;
   }
   return { ok: true, sessionFile, messageId };
-}
-
-/**
- * Persist a user message blocked before model submission.
- *
- * Contract:
- *   - `message.content` is REPLACED with a stub so the agent transcript only
- *     ever shows the policy notice. No agent that reads JSONL `message.content`
- *     can ever see the original.
- *   - `originalBlockedContent` is a TOP-LEVEL JSONL field (next to `message`),
- *     NOT inside `message`. SPA reads this and renders it to the human user
- *     while the agent reads `message.content` and only sees the stub.
- *   - Idempotency key prevents double-writes if the runner retries.
- */
-export async function appendBlockedUserMessageToSessionTranscript(params: {
-  agentId?: string;
-  sessionKey: string;
-  originalText: string;
-  redactedText: string;
-  pluginId: string;
-  reason: string;
-  idempotencyKey?: string;
-  parentId?: string | null;
-  storePath?: string;
-  config?: SessionWriteLockAcquireTimeoutConfig;
-  updateMode?: SessionTranscriptUpdateMode;
-}): Promise<SessionTranscriptAppendResult> {
-  const sessionKey = params.sessionKey.trim();
-  if (!sessionKey) {
-    return { ok: false, reason: "missing sessionKey" };
-  }
-  const storePath = params.storePath ?? resolveDefaultSessionStorePath(params.agentId);
-  const store = loadSessionStore(storePath, { skipCache: true });
-  const normalizedKey = normalizeStoreSessionKey(sessionKey);
-  const entry = (store[normalizedKey] ?? store[sessionKey]) as SessionEntry | undefined;
-  if (!entry?.sessionId) {
-    return { ok: false, reason: `unknown sessionKey: ${sessionKey}` };
-  }
-
-  let sessionFile: string;
-  try {
-    const resolvedSessionFile = await resolveAndPersistSessionFile({
-      sessionId: entry.sessionId,
-      sessionKey,
-      sessionStore: store,
-      storePath,
-      sessionEntry: entry,
-      agentId: params.agentId,
-      sessionsDir: path.dirname(storePath),
-    });
-    sessionFile = resolvedSessionFile.sessionFile;
-  } catch (err) {
-    return {
-      ok: false,
-      reason: formatErrorMessage(err),
-    };
-  }
-
-  const appendResult = await withBlockedUserAppendQueue(sessionFile, async () => {
-    const lock = await acquireSessionWriteLock({
-      sessionFile,
-      timeoutMs: resolveSessionWriteLockAcquireTimeoutMs(params.config),
-      allowReentrant: true,
-    });
-    try {
-      await ensureSessionHeader({ sessionFile, sessionId: entry.sessionId });
-
-      const explicitIdempotencyKey = params.idempotencyKey;
-      const existingMessageId = explicitIdempotencyKey
-        ? await transcriptHasIdempotencyKey(sessionFile, explicitIdempotencyKey)
-        : undefined;
-      if (existingMessageId) {
-        return {
-          kind: "existing" as const,
-          messageId:
-            existingMessageId === true ? (explicitIdempotencyKey ?? "") : existingMessageId,
-        };
-      }
-
-      // Write the user message directly as a raw JSONL append (not via
-      // SessionManager.appendMessage) to avoid the TOCTOU race where the
-      // runner's own SessionManager re-reads the file and overwrites our
-      // line. The JSONL format is stable: one JSON object per line.
-      const messageId = `blocked-${crypto.randomUUID()}`;
-      const nowMs = Date.now();
-      const resolvedParentLink = await resolveTranscriptRawAppendParentLink({
-        transcriptPath: sessionFile,
-      });
-      const parentLink: TranscriptRawAppendParentLink =
-        params.parentId !== undefined && "parentId" in resolvedParentLink
-          ? { parentId: params.parentId }
-          : resolvedParentLink;
-      const originalBlockedContent =
-        params.originalText.length > 0 ? [{ type: "text", text: params.originalText }] : [];
-      const jsonlEntry: Record<string, unknown> = {
-        type: "message",
-        id: messageId,
-        ...parentLink,
-        timestamp: new Date(nowMs).toISOString(),
-        message: {
-          role: "user",
-          content: [{ type: "text", text: params.redactedText }],
-          timestamp: nowMs,
-          ...(explicitIdempotencyKey ? { idempotencyKey: explicitIdempotencyKey } : {}),
-        },
-        originalBlockedContent: {
-          content: originalBlockedContent,
-          blockedBy: params.pluginId,
-          reason: params.reason,
-          blockedAt: nowMs,
-        },
-      };
-
-      await fs.promises.appendFile(sessionFile, JSON.stringify(jsonlEntry) + "\n", {
-        encoding: "utf-8",
-        mode: 0o600,
-      });
-      return { kind: "appended" as const, messageId, jsonlEntry };
-    } finally {
-      await lock.release();
-    }
-  });
-  if (appendResult.kind === "existing") {
-    return {
-      ok: true,
-      sessionFile,
-      messageId: appendResult.messageId,
-    };
-  }
-
-  switch (params.updateMode ?? "inline") {
-    case "inline":
-      emitSessionTranscriptUpdate({
-        sessionFile,
-        sessionKey,
-        message: appendResult.jsonlEntry.message,
-        messageId: appendResult.messageId,
-        forceHistoryRefresh: true,
-      });
-      break;
-    case "file-only":
-      emitSessionTranscriptUpdate(sessionFile);
-      break;
-    case "none":
-      break;
-  }
-  return { ok: true, sessionFile, messageId: appendResult.messageId };
 }
 
 async function transcriptHasIdempotencyKey(

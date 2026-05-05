@@ -10,7 +10,6 @@ import {
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { filterHeartbeatPairs } from "../../../auto-reply/heartbeat-filter.js";
 import { getRuntimeConfig } from "../../../config/config.js";
-import { appendBlockedUserMessageToSessionTranscript } from "../../../config/sessions/transcript.js";
 import type { AssembleResult } from "../../../context-engine/types.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import {
@@ -546,11 +545,50 @@ export function shouldBuildCoreCodingToolsForAllowlist(toolsAllow?: string[]): b
 
 export function normalizeMessagesForLlmBoundary(messages: AgentMessage[]): AgentMessage[] {
   const normalized = stripToolResultDetails(normalizeAssistantReplayContent(messages));
-  return stripRuntimeContextCustomMessages(normalized);
+  return stripBlockedOriginalContentFromMessages(stripRuntimeContextCustomMessages(normalized));
 }
 
 function cloneHookMessages(messages: AgentMessage[]): AgentMessage[] {
   return messages.map((message) => structuredClone(message));
+}
+
+function stripBlockedOriginalContentFromMessages(messages: AgentMessage[]): AgentMessage[] {
+  return messages.map(stripBlockedOriginalContentFromMessage);
+}
+
+function stripBlockedOriginalContentFromMessage(message: AgentMessage): AgentMessage {
+  const record = message as AgentMessage & { __openclaw?: unknown };
+  const meta =
+    record.__openclaw && typeof record.__openclaw === "object" && !Array.isArray(record.__openclaw)
+      ? (record.__openclaw as Record<string, unknown>)
+      : undefined;
+  if (!meta || !Object.hasOwn(meta, "originalBlockedContent")) {
+    return message;
+  }
+  const { originalBlockedContent: _originalBlockedContent, ...remainingMeta } = meta;
+  const { __openclaw: _openclaw, ...remainingMessage } = record;
+  if (Object.keys(remainingMeta).length === 0) {
+    return remainingMessage as AgentMessage;
+  }
+  return {
+    ...remainingMessage,
+    __openclaw: remainingMeta,
+  } as unknown as AgentMessage;
+}
+
+function sessionMessagesContainIdempotencyKey(
+  messages: AgentMessage[],
+  idempotencyKey: string,
+): boolean {
+  return messages.some(
+    (message) =>
+      typeof (message as { idempotencyKey?: unknown }).idempotencyKey === "string" &&
+      (message as { idempotencyKey?: unknown }).idempotencyKey === idempotencyKey,
+  );
+}
+
+function flushSessionManagerFile(sessionManager: ReturnType<typeof guardSessionManager>): void {
+  (sessionManager as unknown as { _rewriteFile?: () => void })._rewriteFile?.();
 }
 
 export function shouldRunLlmOutputHooksForAttempt(params: { promptErrorSource: string | null }) {
@@ -1689,7 +1727,6 @@ export async function runEmbeddedAttempt(
           await baseConvertToLlm(normalizeMessagesForLlmBoundary(messages));
       }
       let prePromptMessageCount = activeSession.messages.length;
-      let blockedBeforeAgentRunEndMessage: AgentMessage | undefined;
       let unwindowedContextEngineMessagesForPrecheck: AgentMessage[] | undefined;
       let contextEnginePromptAuthority: NonNullable<AssembleResult["promptAuthority"]> =
         "assembled";
@@ -2808,29 +2845,36 @@ export async function runEmbeddedAttempt(
             pluginId: string;
             reason: string;
           }): Promise<boolean> => {
-            blockedBeforeAgentRunEndMessage = {
-              role: "user",
-              content: block.message,
-              timestamp: Date.now(),
+            const idempotencyKey = `hook-block:before_agent_run:user:${params.runId}`;
+            if (sessionMessagesContainIdempotencyKey(activeSession.messages, idempotencyKey)) {
+              return true;
+            }
+            const nowMs = Date.now();
+            const originalBlockedContent =
+              blockedTranscriptPrompt.length > 0
+                ? [{ type: "text" as const, text: blockedTranscriptPrompt }]
+                : [];
+            const redactedUserMessage = {
+              role: "user" as const,
+              content: [{ type: "text" as const, text: block.message }],
+              timestamp: nowMs,
+              idempotencyKey,
+              __openclaw: {
+                originalBlockedContent: {
+                  content: originalBlockedContent,
+                  blockedBy: block.pluginId,
+                  reason: block.reason,
+                  blockedAt: nowMs,
+                },
+              },
             };
             try {
-              const result = await appendBlockedUserMessageToSessionTranscript({
-                agentId: sessionAgentId,
-                sessionKey: params.sessionKey ?? "",
-                originalText: blockedTranscriptPrompt,
-                redactedText: block.message,
-                pluginId: block.pluginId,
-                reason: block.reason,
-                idempotencyKey: `hook-block:before_agent_run:user:${params.runId}`,
-                parentId: transcriptLeafId,
-                updateMode: "inline",
-              });
-              if (!result.ok) {
-                log.warn(
-                  `before_agent_run block: failed to persist redacted user message: ${result.reason}`,
-                );
-                return false;
-              }
+              activeSessionManager.appendMessage(
+                redactedUserMessage as Parameters<typeof activeSessionManager.appendMessage>[0],
+              );
+              flushSessionManagerFile(activeSessionManager);
+              activeSession.agent.state.messages =
+                activeSessionManager.buildSessionContext().messages;
               return true;
             } catch (err) {
               log.warn(
@@ -3329,10 +3373,9 @@ export async function runEmbeddedAttempt(
             );
           }
         }
-        messagesSnapshot = snapshotSelection.messagesSnapshot;
-        if (blockedBeforeAgentRunEndMessage) {
-          messagesSnapshot = [...messagesSnapshot, blockedBeforeAgentRunEndMessage];
-        }
+        messagesSnapshot = stripBlockedOriginalContentFromMessages(
+          snapshotSelection.messagesSnapshot,
+        );
         sessionIdUsed = snapshotSelection.sessionIdUsed;
 
         lastAssistant = messagesSnapshot

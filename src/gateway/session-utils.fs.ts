@@ -759,8 +759,19 @@ function parsedSessionEntryToMessage(
   }
   const entry = parsed as Record<string, unknown>;
   if (entry.message) {
+    const messageRecord =
+      entry.message && typeof entry.message === "object" && !Array.isArray(entry.message)
+        ? (entry.message as Record<string, unknown>)
+        : undefined;
+    const messageOpenClaw =
+      messageRecord?.__openclaw &&
+      typeof messageRecord.__openclaw === "object" &&
+      !Array.isArray(messageRecord.__openclaw)
+        ? (messageRecord.__openclaw as Record<string, unknown>)
+        : undefined;
     const originalBlockedContent =
       opts?.includeBlockedOriginalContent === true &&
+      !messageOpenClaw?.originalBlockedContent &&
       entry.originalBlockedContent &&
       typeof entry.originalBlockedContent === "object" &&
       !Array.isArray(entry.originalBlockedContent)

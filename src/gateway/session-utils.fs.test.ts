@@ -3,7 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import { SessionManager } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import { appendBlockedUserMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import { createToolSummaryPreviewTranscriptLines } from "./session-preview.test-helpers.js";
 import { clearSessionTranscriptIndexCache } from "./session-transcript-index.fs.js";
 import {
@@ -76,6 +75,33 @@ function writeTranscript(tmpDir: string, sessionId: string, lines: unknown[]): s
   const transcriptPath = path.join(tmpDir, `${sessionId}.jsonl`);
   fs.writeFileSync(transcriptPath, lines.map((line) => JSON.stringify(line)).join("\n"), "utf-8");
   return transcriptPath;
+}
+
+function appendBlockedUserMessageWithSessionManager(params: {
+  sessionFile: string;
+  originalText: string;
+  redactedText: string;
+  pluginId: string;
+  reason: string;
+  idempotencyKey?: string;
+}): string {
+  const sessionManager = SessionManager.open(params.sessionFile, path.dirname(params.sessionFile));
+  const messageId = sessionManager.appendMessage({
+    role: "user",
+    content: [{ type: "text", text: params.redactedText }],
+    timestamp: Date.now(),
+    ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
+    __openclaw: {
+      originalBlockedContent: {
+        content: params.originalText ? [{ type: "text", text: params.originalText }] : [],
+        blockedBy: params.pluginId,
+        reason: params.reason,
+        blockedAt: Date.now(),
+      },
+    },
+  } as Parameters<typeof sessionManager.appendMessage>[0]);
+  (sessionManager as unknown as { _rewriteFile?: () => void })._rewriteFile?.();
+  return messageId;
 }
 
 function buildBasicSessionTranscript(
@@ -1270,17 +1296,15 @@ describe("readSessionMessages", () => {
       "utf-8",
     );
 
-    const appendResult = await appendBlockedUserMessageToSessionTranscript({
-      sessionKey,
-      storePath,
+    const messageId = appendBlockedUserMessageWithSessionManager({
+      sessionFile,
       originalText: "[hitl:block] hello",
       redactedText: "Blocked by HITL test hook.",
       pluginId: "hitl-test-hooks",
       reason: "blocked by test policy",
-      updateMode: "none",
     });
 
-    expect(appendResult.ok).toBe(true);
+    expect(messageId).toBeTruthy();
     const out = readSessionMessages(sessionId, storePath, sessionFile, {
       includeBlockedOriginalContent: true,
     });
@@ -1300,72 +1324,14 @@ describe("readSessionMessages", () => {
     ).toEqual([{ type: "text", text: "[hitl:block] hello" }]);
   });
 
-  test("keeps legacy linear history when a blocked hook append has an explicit parent", async () => {
-    const sessionId = "blocked-explicit-parent-legacy-session";
-    const sessionKey = "agent:main:explicit:blocked-explicit-parent-legacy";
-    const sessionFile = path.join(tmpDir, `${sessionId}.jsonl`);
-    fs.writeFileSync(
-      storePath,
-      JSON.stringify({
-        [sessionKey]: {
-          sessionId,
-          updatedAt: 1,
-          sessionFile,
-        },
-      }),
-      "utf-8",
-    );
-    fs.writeFileSync(
-      sessionFile,
-      [
-        { type: "session", version: 1, id: sessionId },
-        {
-          type: "message",
-          id: "legacy-first",
-          message: { role: "user", content: "legacy first", timestamp: 1 },
-        },
-        {
-          type: "message",
-          id: "legacy-second",
-          message: { role: "assistant", content: "legacy second", timestamp: 2 },
-        },
-      ]
-        .map((line) => JSON.stringify(line))
-        .join("\n") + "\n",
-      "utf-8",
-    );
-
-    const appendResult = await appendBlockedUserMessageToSessionTranscript({
-      sessionKey,
-      storePath,
-      originalText: "[hitl:block] legacy secret",
-      redactedText: "Blocked by HITL test hook.",
-      pluginId: "hitl-test-hooks",
-      reason: "blocked by test policy",
-      parentId: "legacy-second",
-      updateMode: "none",
-    });
-
-    expect(appendResult.ok).toBe(true);
-    const out = readSessionMessages(sessionId, storePath, sessionFile, {
-      includeBlockedOriginalContent: true,
-    });
-    expect(
-      out.map((message) => ({
-        role: (message as { role?: string }).role,
-        text: (message as { content?: string | Array<{ text?: string }> }).content,
-      })),
-    ).toEqual([
-      { role: "user", text: "legacy first" },
-      { role: "assistant", text: "legacy second" },
-      { role: "user", text: [{ type: "text", text: "Blocked by HITL test hook." }] },
-    ]);
-  });
-
   test("keeps repeated blocked hook messages together in a new session", async () => {
-    const sessionId = "repeated-blocked-hook-session";
     const sessionKey = "agent:main:explicit:repeated-blocked-hook";
-    const sessionFile = path.join(tmpDir, `${sessionId}.jsonl`);
+    const sessionManager = SessionManager.create(tmpDir, tmpDir);
+    const sessionId = sessionManager.getSessionId();
+    const sessionFile = sessionManager.getSessionFile();
+    if (!sessionFile) {
+      throw new Error("expected SessionManager.create to return a session file");
+    }
     fs.writeFileSync(
       storePath,
       JSON.stringify({
@@ -1378,27 +1344,21 @@ describe("readSessionMessages", () => {
       "utf-8",
     );
 
-    const firstAppend = await appendBlockedUserMessageToSessionTranscript({
-      sessionKey,
-      storePath,
+    appendBlockedUserMessageWithSessionManager({
+      sessionFile,
       originalText: "[hitl:block] first",
       redactedText: "Blocked by HITL test hook.",
       pluginId: "hitl-test-hooks",
       reason: "blocked by test policy",
-      updateMode: "none",
     });
-    const secondAppend = await appendBlockedUserMessageToSessionTranscript({
-      sessionKey,
-      storePath,
+    appendBlockedUserMessageWithSessionManager({
+      sessionFile,
       originalText: "[hitl:block] second",
       redactedText: "Blocked by HITL test hook.",
       pluginId: "hitl-test-hooks",
       reason: "blocked by test policy",
-      updateMode: "none",
     });
 
-    expect(firstAppend.ok).toBe(true);
-    expect(secondAppend.ok).toBe(true);
     const out = readSessionMessages(sessionId, storePath, sessionFile, {
       includeBlockedOriginalContent: true,
     });
@@ -1415,58 +1375,6 @@ describe("readSessionMessages", () => {
       { role: "user", original: "[hitl:block] first" },
       { role: "user", original: "[hitl:block] second" },
     ]);
-  });
-
-  test("dedupes blocked hook messages by idempotency key", async () => {
-    const sessionId = "dedupe-blocked-hook-session";
-    const sessionKey = "agent:main:explicit:dedupe-blocked-hook";
-    const sessionFile = path.join(tmpDir, `${sessionId}.jsonl`);
-    fs.writeFileSync(
-      storePath,
-      JSON.stringify({
-        [sessionKey]: {
-          sessionId,
-          updatedAt: 1,
-          sessionFile,
-        },
-      }),
-      "utf-8",
-    );
-
-    const firstAppend = await appendBlockedUserMessageToSessionTranscript({
-      sessionKey,
-      storePath,
-      originalText: "[hitl:block] duplicate",
-      redactedText: "Blocked by HITL test hook.",
-      pluginId: "hitl-test-hooks",
-      reason: "blocked by test policy",
-      idempotencyKey: "hook-block:before_agent_run:user:run-1",
-      updateMode: "none",
-    });
-    const secondAppend = await appendBlockedUserMessageToSessionTranscript({
-      sessionKey,
-      storePath,
-      originalText: "[hitl:block] duplicate",
-      redactedText: "Blocked by HITL test hook.",
-      pluginId: "hitl-test-hooks",
-      reason: "blocked by test policy",
-      idempotencyKey: "hook-block:before_agent_run:user:run-1",
-      updateMode: "none",
-    });
-
-    expect(firstAppend.ok).toBe(true);
-    expect(secondAppend).toEqual(firstAppend);
-    const out = readSessionMessages(sessionId, storePath, sessionFile, {
-      includeBlockedOriginalContent: true,
-    });
-    expect(out).toHaveLength(1);
-    expect(
-      (
-        out[0] as {
-          __openclaw?: { originalBlockedContent?: { content?: Array<{ text?: string }> } };
-        }
-      ).__openclaw?.originalBlockedContent?.content?.[0]?.text,
-    ).toBe("[hitl:block] duplicate");
   });
 });
 

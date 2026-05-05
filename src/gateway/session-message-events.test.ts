@@ -2,10 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
-import {
-  appendAssistantMessageToSessionTranscript,
-  appendBlockedUserMessageToSessionTranscript,
-} from "../config/sessions/transcript.js";
+import { appendAssistantMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import * as transcriptEvents from "../sessions/transcript-events.js";
 import { emitSessionTranscriptUpdate } from "../sessions/transcript-events.js";
@@ -348,15 +345,23 @@ describe("session.message websocket events", () => {
 
     await withOperatorSessionSubscriber(async (ws) => {
       const messageEventPromise = waitForSessionMessageEvent(ws, "agent:main:main");
-      const appended = await appendBlockedUserMessageToSessionTranscript({
+      emitSessionTranscriptUpdate({
+        sessionFile: path.join(path.dirname(storePath), "sess-main.jsonl"),
         sessionKey: "agent:main:main",
-        originalText: "secret blocked prompt",
-        redactedText: "The agent cannot read this message.",
-        pluginId: "policy-plugin",
-        reason: "contains protected content",
-        storePath,
+        messageId: "blocked-message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "The agent cannot read this message." }],
+          __openclaw: {
+            originalBlockedContent: {
+              content: [{ type: "text", text: "secret blocked prompt" }],
+              blockedBy: "policy-plugin",
+              reason: "contains protected content",
+              blockedAt: Date.now(),
+            },
+          },
+        },
       });
-      expect(appended.ok).toBe(true);
 
       const messageEvent = await messageEventPromise;
       const payload = messageEvent.payload as {

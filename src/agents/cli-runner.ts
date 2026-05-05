@@ -1,6 +1,6 @@
+import { SessionManager } from "@mariozechner/pi-coding-agent";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
-import { appendBlockedUserMessageToSessionTranscript } from "../config/sessions/transcript.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { buildAgentHookContextChannelFields } from "../plugins/hook-agent-context.js";
@@ -20,6 +20,10 @@ import { classifyFailoverReason, isFailoverErrorMessage } from "./pi-embedded-he
 import type { EmbeddedPiRunResult } from "./pi-embedded-runner.js";
 
 const log = createSubsystemLogger("agents/cli-runner");
+
+function flushSessionManagerFile(sessionManager: SessionManager): void {
+  (sessionManager as unknown as { _rewriteFile?: () => void })._rewriteFile?.();
+}
 
 function buildHandledReplyPayloads(reply?: ReplyPayload) {
   const normalized = reply ?? { text: SILENT_REPLY_TOKEN };
@@ -240,20 +244,30 @@ export async function runPreparedCliAgent(
     pluginId: string;
     reason: string;
   }): Promise<void> => {
-    const result = await appendBlockedUserMessageToSessionTranscript({
-      agentId: params.agentId,
-      sessionKey: params.sessionKey ?? "",
-      originalText: params.transcriptPrompt ?? params.prompt,
-      redactedText: block.message,
-      pluginId: block.pluginId,
-      reason: block.reason,
-      idempotencyKey: `hook-block:before_agent_run:user:${params.runId}`,
-      config: params.config,
-      updateMode: "file-only",
-    });
-    if (!result.ok) {
+    try {
+      const nowMs = Date.now();
+      const originalText = params.transcriptPrompt ?? params.prompt;
+      const sessionManager = SessionManager.open(params.sessionFile);
+      sessionManager.appendMessage({
+        role: "user",
+        content: [{ type: "text", text: block.message }],
+        timestamp: nowMs,
+        idempotencyKey: `hook-block:before_agent_run:user:${params.runId}`,
+        __openclaw: {
+          originalBlockedContent: {
+            content: originalText ? [{ type: "text", text: originalText }] : [],
+            blockedBy: block.pluginId,
+            reason: block.reason,
+            blockedAt: nowMs,
+          },
+        },
+      } as Parameters<typeof sessionManager.appendMessage>[0]);
+      flushSessionManagerFile(sessionManager);
+    } catch (err) {
       log.warn(
-        `before_agent_run block: failed to persist redacted CLI user message: ${result.reason}`,
+        `before_agent_run block: failed to persist redacted CLI user message: ${formatErrorMessage(
+          err,
+        )}`,
       );
     }
   };
