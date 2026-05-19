@@ -409,6 +409,7 @@ describe("mattermostPlugin", () => {
 
     it("maps replyTo to replyToId for send actions", async () => {
       const cfg = createMattermostTestConfig();
+      const mediaReadFile = vi.fn();
 
       await mattermostPlugin.actions?.handleAction?.(
         createMattermostActionContext({
@@ -417,9 +418,12 @@ describe("mattermostPlugin", () => {
             to: "channel:CHAN1",
             message: "hello",
             replyTo: "post-root",
+            media: "/tmp/workspace/report.xlsx",
           },
           cfg,
           accountId: "default",
+          mediaLocalRoots: ["/tmp/workspace"],
+          mediaReadFile,
         }),
       );
 
@@ -427,8 +431,12 @@ describe("mattermostPlugin", () => {
         "channel:CHAN1",
         "hello",
         expect.objectContaining({
+          cfg,
           accountId: "default",
           replyToId: "post-root",
+          mediaUrl: "/tmp/workspace/report.xlsx",
+          mediaLocalRoots: ["/tmp/workspace"],
+          mediaReadFile,
         }),
       );
     });
@@ -469,9 +477,10 @@ describe("mattermostPlugin", () => {
       expect(chunker("hello world", 5)).toEqual(["hello", "world"]);
     });
 
-    it("forwards mediaLocalRoots on sendMedia", async () => {
+    it("forwards mediaLocalRoots and mediaReadFile on sendMedia", async () => {
       const sendMedia = requireMattermostSendMedia();
       const cfg = createMattermostTestConfig();
+      const mediaReadFile = vi.fn();
 
       const params: MattermostSendMediaParams = {
         cfg,
@@ -479,6 +488,7 @@ describe("mattermostPlugin", () => {
         text: "hello",
         mediaUrl: "/tmp/workspace/image.png",
         mediaLocalRoots: ["/tmp/workspace"],
+        mediaReadFile,
         accountId: "default",
         replyToId: "post-root",
       };
@@ -491,6 +501,7 @@ describe("mattermostPlugin", () => {
         expect.objectContaining({
           mediaUrl: "/tmp/workspace/image.png",
           mediaLocalRoots: ["/tmp/workspace"],
+          mediaReadFile,
         }),
       );
     });

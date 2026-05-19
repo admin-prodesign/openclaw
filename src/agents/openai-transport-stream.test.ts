@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildOpenAIResponsesParams,
   buildOpenAICompletionsParams,
+  extractReasoningDetailsText,
   parseTransportChunkUsage,
   resolveAzureOpenAIApiVersion,
   sanitizeTransportPayloadText,
@@ -18,6 +19,24 @@ import {
 import { SYSTEM_PROMPT_CACHE_BOUNDARY } from "./system-prompt-cache-boundary.js";
 
 describe("openai transport stream", () => {
+  it("extracts text from OpenRouter reasoning_details payloads", () => {
+    expect(
+      extractReasoningDetailsText([
+        { type: "reasoning.text", text: "hello " },
+        { type: "reasoning.text", text: "world" },
+      ]),
+    ).toBe("hello world");
+
+    expect(
+      extractReasoningDetailsText({
+        reasoning_details: [
+          { type: "reasoning.text", text: "nested " },
+          { type: "reasoning.text", text: "detail" },
+        ],
+      }),
+    ).toBe("nested detail");
+  });
+
   it("reports the supported transport-aware APIs", () => {
     expect(isTransportAwareApiSupported("openai-responses")).toBe(true);
     expect(isTransportAwareApiSupported("openai-codex-responses")).toBe(true);

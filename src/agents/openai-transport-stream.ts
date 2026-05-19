@@ -119,6 +119,37 @@ function stringifyJsonLike(value: unknown, fallback = ""): string {
   return fallback;
 }
 
+export function extractReasoningDetailsText(value: unknown): string {
+  const collect = (entry: unknown): string => {
+    if (typeof entry === "string") {
+      return entry;
+    }
+    if (!entry || typeof entry !== "object") {
+      return "";
+    }
+    const text = (entry as { text?: unknown }).text;
+    if (typeof text === "string" && text.length > 0) {
+      return text;
+    }
+    const nested = (entry as { reasoning_details?: unknown }).reasoning_details;
+    if (Array.isArray(nested)) {
+      return nested
+        .map((part) => collect(part))
+        .filter(Boolean)
+        .join("");
+    }
+    return "";
+  };
+
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => collect(entry))
+      .filter(Boolean)
+      .join("");
+  }
+  return collect(value);
+}
+
 function getServiceTierCostMultiplier(serviceTier: ResponseCreateParamsStreaming["service_tier"]) {
   switch (serviceTier) {
     case "flex":
@@ -1058,18 +1089,25 @@ async function processOpenAICompletionsStream(
       const value = (choice.delta as Record<string, unknown>)[field];
       return typeof value === "string" && value.length > 0;
     });
-    if (reasoningField) {
+    const reasoningDetailsText = extractReasoningDetailsText(
+      (choice.delta as Record<string, unknown>).reasoning_details,
+    );
+    const reasoningDeltaText = reasoningField
+      ? String((choice.delta as Record<string, unknown>)[reasoningField])
+      : reasoningDetailsText;
+    const reasoningSignature = reasoningField ?? "reasoning_details";
+    if (reasoningDeltaText) {
       if (!currentBlock || currentBlock.type !== "thinking") {
         finishCurrentBlock();
-        currentBlock = { type: "thinking", thinking: "", thinkingSignature: reasoningField };
+        currentBlock = { type: "thinking", thinking: "", thinkingSignature: reasoningSignature };
         output.content.push(currentBlock);
         stream.push({ type: "thinking_start", contentIndex: blockIndex(), partial: output });
       }
-      currentBlock.thinking += String((choice.delta as Record<string, unknown>)[reasoningField]);
+      currentBlock.thinking += reasoningDeltaText;
       stream.push({
         type: "thinking_delta",
         contentIndex: blockIndex(),
-        delta: String((choice.delta as Record<string, unknown>)[reasoningField]),
+        delta: reasoningDeltaText,
         partial: output,
       });
       continue;

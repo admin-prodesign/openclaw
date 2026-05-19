@@ -80,15 +80,6 @@ function cacheKey(baseUrl: string, token: string): string {
   return `${baseUrl}::${token}`;
 }
 
-function normalizeMessage(text: string, mediaUrl?: string): string {
-  const trimmed = text.trim();
-  const media = mediaUrl?.trim();
-  return [trimmed, media].filter(Boolean).join("\n");
-}
-
-function isHttpUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
-}
 export function parseMattermostTarget(raw: string): MattermostTarget {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -431,12 +422,13 @@ export async function sendMessageMattermost(
     } catch (err) {
       uploadError = err instanceof Error ? err : new Error(String(err));
       if (core.logging.shouldLogVerbose()) {
-        logger.debug?.(
-          `mattermost send: media upload failed, falling back to URL text: ${String(err)}`,
-        );
+        logger.debug?.(`mattermost send: media upload failed: ${String(err)}`);
       }
-      message = normalizeMessage(message, isHttpUrl(mediaUrl) ? mediaUrl : "");
     }
+  }
+
+  if (uploadError) {
+    throw new Error(`Mattermost media upload failed: ${uploadError.message}`);
   }
 
   if (message) {
@@ -449,9 +441,6 @@ export async function sendMessageMattermost(
   }
 
   if (!message && (!fileIds || fileIds.length === 0)) {
-    if (uploadError) {
-      throw new Error(`Mattermost media upload failed: ${uploadError.message}`);
-    }
     throw new Error("Mattermost message is empty");
   }
 
