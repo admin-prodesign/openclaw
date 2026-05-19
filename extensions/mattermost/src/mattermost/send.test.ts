@@ -296,6 +296,7 @@ describe("sendMessageMattermost", () => {
   });
 
   it("loads outbound media with trusted local roots before upload", async () => {
+    const mediaReadFile = vi.fn();
     mockState.loadOutboundMediaFromUrl.mockResolvedValueOnce({
       buffer: Buffer.from("media-bytes"),
       fileName: "photo.png",
@@ -313,12 +314,14 @@ describe("sendMessageMattermost", () => {
       cfg: TEST_CFG,
       mediaUrl: "file:///tmp/agent-workspace/photo.png",
       mediaLocalRoots: ["/tmp/agent-workspace"],
+      mediaReadFile,
     });
 
     expect(mockState.loadOutboundMediaFromUrl).toHaveBeenCalledWith(
       "file:///tmp/agent-workspace/photo.png",
       {
         mediaLocalRoots: ["/tmp/agent-workspace"],
+        mediaReadFile,
       },
     );
     const uploadCall = uploadMattermostFileCall();
@@ -326,6 +329,25 @@ describe("sendMessageMattermost", () => {
     expect(uploadCall?.[1]?.channelId).toBe("town-square");
     expect(uploadCall?.[1]?.fileName).toBe("photo.png");
     expect(uploadCall?.[1]?.contentType).toBe("image/png");
+  });
+
+  it("throws when Mattermost media upload fails instead of posting text-only fallback", async () => {
+    mockState.loadOutboundMediaFromUrl.mockResolvedValueOnce({
+      buffer: Buffer.from("media-bytes"),
+      fileName: "report.xlsx",
+      contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      kind: "document",
+    });
+    mockState.uploadMattermostFile.mockRejectedValueOnce(new Error("upload denied"));
+
+    await expect(
+      sendMessageMattermost("channel:town-square", "attached report", {
+        mediaUrl: "file:///tmp/agent-workspace/report.xlsx",
+        mediaLocalRoots: ["/tmp/agent-workspace"],
+      }),
+    ).rejects.toThrow("Mattermost media upload failed: upload denied");
+
+    expect(mockState.createMattermostPost).not.toHaveBeenCalled();
   });
 
   it("builds interactive button props when buttons are provided", async () => {
