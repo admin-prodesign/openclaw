@@ -118,6 +118,10 @@ export type FollowupRun = {
     allowEmptyAssistantReplyAsSilent?: boolean;
     suppressNextUserMessagePersistence?: boolean;
     suppressTranscriptOnlyAssistantPersistence?: boolean;
+    /** True when this queued run is an agent heartbeat. */
+    isHeartbeat?: boolean;
+    /** Resolved heartbeat model override, if one was configured for this run. */
+    heartbeatModelOverride?: string;
   };
 };
 

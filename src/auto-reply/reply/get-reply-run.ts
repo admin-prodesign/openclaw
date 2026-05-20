@@ -1155,6 +1155,8 @@ export async function runPreparedReply(
       allowEmptyAssistantReplyAsSilent,
       suppressNextUserMessagePersistence: isRoomEvent,
       suppressTranscriptOnlyAssistantPersistence: isRoomEvent,
+      isHeartbeat: opts?.isHeartbeat === true,
+      heartbeatModelOverride: opts?.heartbeatModelOverride,
       ...(!useFastReplyRuntime &&
       isReasoningTagProvider(provider, {
         config: cfg,
