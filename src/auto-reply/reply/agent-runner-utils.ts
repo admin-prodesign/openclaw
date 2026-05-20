@@ -109,16 +109,22 @@ export const resolveEnforceFinalTag = (
   );
 
 export function resolveModelFallbackOptions(run: FollowupRun["run"]) {
+  const heartbeatHasResolvedModelOverride =
+    run.isHeartbeat === true &&
+    typeof run.heartbeatModelOverride === "string" &&
+    run.heartbeatModelOverride.trim();
   return {
     cfg: run.config,
     provider: run.provider,
     model: run.model,
     agentDir: run.agentDir,
-    fallbacksOverride: resolveRunModelFallbacksOverride({
-      cfg: run.config,
-      agentId: run.agentId,
-      sessionKey: run.sessionKey,
-    }),
+    fallbacksOverride: heartbeatHasResolvedModelOverride
+      ? []
+      : resolveRunModelFallbacksOverride({
+          cfg: run.config,
+          agentId: run.agentId,
+          sessionKey: run.sessionKey,
+        }),
   };
 }
 

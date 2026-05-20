@@ -88,6 +88,16 @@ describe("agent-runner-utils", () => {
     expect(resolved.fallbacksOverride).toEqual(["fallback-model"]);
   });
 
+  it("disables model fallbacks for heartbeat runs with a resolved model override", () => {
+    hoisted.resolveRunModelFallbacksOverrideMock.mockReturnValue(["fallback-model"]);
+    const run = makeRun({ isHeartbeat: true, heartbeatModelOverride: "openai/gpt-5.4-mini" });
+
+    const resolved = resolveModelFallbackOptions(run);
+
+    expect(resolved.fallbacksOverride).toEqual([]);
+    expect(hoisted.resolveRunModelFallbacksOverrideMock).not.toHaveBeenCalled();
+  });
+
   it("builds embedded run base params with auth profile and run metadata", () => {
     const run = makeRun({ enforceFinalTag: true });
     const authProfile = resolveProviderScopedAuthProfile({
