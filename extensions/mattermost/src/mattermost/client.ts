@@ -48,6 +48,15 @@ export const MattermostPostSchema = z
 
 export type MattermostPost = z.infer<typeof MattermostPostSchema>;
 
+export const MattermostThreadSchema = z
+  .object({
+    order: z.array(z.string()).optional().default([]),
+    posts: z.record(z.string(), MattermostPostSchema).optional().default({}),
+  })
+  .passthrough();
+
+export type MattermostThread = z.infer<typeof MattermostThreadSchema>;
+
 export type MattermostFileInfo = {
   id: string;
   name?: string | null;
@@ -168,6 +177,14 @@ export async function fetchMattermostUser(
   userId: string,
 ): Promise<MattermostUser> {
   return await client.request<MattermostUser>(`/users/${userId}`);
+}
+
+export async function fetchMattermostThread(
+  client: MattermostClient,
+  rootPostId: string,
+): Promise<MattermostThread> {
+  const raw = await client.request<unknown>(`/posts/${encodeURIComponent(rootPostId)}/thread`);
+  return MattermostThreadSchema.parse(raw);
 }
 
 export async function fetchMattermostUserByUsername(

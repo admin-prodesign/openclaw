@@ -62,6 +62,7 @@ describe("mattermost monitor resources", () => {
         path: "/tmp/file.png",
         contentType: "image/png",
         kind: "image",
+        fileId: "file-1",
       },
     ]);
 

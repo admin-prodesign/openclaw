@@ -15,6 +15,7 @@ export type MattermostMediaInfo = {
   path: string;
   contentType?: string;
   kind: MattermostMediaKind;
+  fileId?: string;
 };
 
 const CHANNEL_CACHE_TTL_MS = 5 * 60_000;
@@ -90,6 +91,7 @@ export function createMattermostMonitorResources(params: {
           path: saved.path,
           contentType,
           kind: mediaKindFromMime(contentType) ?? "unknown",
+          fileId,
         });
       } catch (err) {
         logger.debug?.(`mattermost: failed to download file ${fileId}: ${String(err)}`);
