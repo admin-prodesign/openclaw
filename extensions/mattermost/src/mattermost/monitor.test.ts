@@ -12,6 +12,8 @@ import {
   formatMattermostFinalDeliveryOutcomeLog,
   MattermostRetryableInboundError,
   processMattermostReplayGuardedPost,
+  collectMattermostThreadAttachmentRefs,
+  buildMattermostThreadAttachmentContext,
   resolveMattermostReactionChannelId,
   resolveMattermostEffectiveReplyToId,
   resolveMattermostReplyRootId,
@@ -117,6 +119,77 @@ function mockCallArg(
 ): unknown {
   return mockCall(mock, index, label)[0];
 }
+
+describe("mattermost thread attachment context", () => {
+  it("collects root-thread files before the triggering reply files and deduplicates them", () => {
+    const result = collectMattermostThreadAttachmentRefs({
+      triggeringPost: {
+        id: "reply-2",
+        user_id: "user-2",
+        message: "@pd-one please read the materials",
+        root_id: "root-1",
+        file_ids: ["reply-file", "root-file-a"],
+      },
+      thread: {
+        order: ["root-1", "reply-1", "reply-2"],
+        posts: {
+          "reply-2": {
+            id: "reply-2",
+            user_id: "user-2",
+            message: "@pd-one please read the materials",
+            root_id: "root-1",
+            file_ids: ["reply-file", "root-file-a"],
+          },
+          "reply-1": {
+            id: "reply-1",
+            user_id: "user-3",
+            message: "follow-up",
+            root_id: "root-1",
+            file_ids: ["reply-file"],
+          },
+          "root-1": {
+            id: "root-1",
+            user_id: "user-1",
+            message: "training materials",
+            file_ids: ["root-file-a", "root-file-b"],
+          },
+        },
+      },
+    });
+
+    expect(result.fileIds).toEqual(["root-file-a", "root-file-b", "reply-file"]);
+    expect(result.manifest.map((entry) => [entry.fileId, entry.sourcePostId])).toEqual([
+      ["root-file-a", "root-1"],
+      ["root-file-b", "root-1"],
+      ["reply-file", "reply-1"],
+    ]);
+    expect(result.caveat).toBeUndefined();
+  });
+
+  it("builds a model-visible manifest with download status and a caveat", () => {
+    const context = buildMattermostThreadAttachmentContext({
+      manifest: [
+        {
+          fileId: "file-ok",
+          sourcePostId: "root-1",
+          status: "downloaded",
+          localPath: "/tmp/file-ok.pdf",
+        },
+        { fileId: "file-missing", sourcePostId: "root-1", status: "missing" },
+      ],
+      caveat: "Mattermost thread fetch failed: 403 forbidden",
+    });
+
+    expect(context).toContain("Mattermost thread attachment manifest");
+    expect(context).toContain("file-ok");
+    expect(context).toContain("downloaded");
+    expect(context).toContain("/tmp/file-ok.pdf");
+    expect(context).toContain("file-missing");
+    expect(context).toContain("missing");
+    expect(context).toContain("Mattermost thread fetch failed: 403 forbidden");
+    expect(context).toContain("Do not answer document-grounded requests from general memory");
+  });
+});
 
 describe("mattermost mention gating", () => {
   it("accepts unmentioned root channel posts in onmessage mode", () => {

@@ -29,10 +29,12 @@ import {
 import {
   createMattermostClient,
   fetchMattermostMe,
+  fetchMattermostThread,
   normalizeMattermostBaseUrl,
   updateMattermostPost,
   type MattermostClient,
   type MattermostPost,
+  type MattermostThread,
   type MattermostUser,
 } from "./client.js";
 import { buildMattermostToolStatusText, createMattermostDraftStream } from "./draft-stream.js";
@@ -502,6 +504,142 @@ function buildMattermostAttachmentPlaceholder(mediaList: MattermostMediaInfo[]):
   const suffix = mediaList.length === 1 ? label : `${label}s`;
   const tag = allImages ? "<media:image>" : "<media:document>";
   return `${tag} (${mediaList.length} ${suffix})`;
+}
+
+export type MattermostThreadAttachmentManifestEntry = {
+  fileId: string;
+  sourcePostId: string;
+  filename?: string;
+  status?: "pending" | "downloaded" | "missing" | "failed";
+  localPath?: string;
+  contentType?: string;
+};
+
+export function collectMattermostThreadAttachmentRefs(params: {
+  triggeringPost: MattermostPost;
+  thread?: MattermostThread | null;
+  caveat?: string;
+}): {
+  fileIds: string[];
+  manifest: MattermostThreadAttachmentManifestEntry[];
+  caveat?: string;
+} {
+  const postsById = params.thread?.posts ?? {};
+  const orderedPosts = params.thread
+    ? [
+        ...params.thread.order.map((postId) => postsById[postId]).filter(Boolean),
+        ...Object.values(postsById).filter((post) => !params.thread?.order.includes(post.id)),
+        ...(params.triggeringPost.id && !postsById[params.triggeringPost.id]
+          ? [params.triggeringPost]
+          : []),
+      ]
+    : [];
+  const candidates = orderedPosts.length > 0 ? orderedPosts : [params.triggeringPost];
+  const seen = new Set<string>();
+  const manifest: MattermostThreadAttachmentManifestEntry[] = [];
+  for (const post of candidates) {
+    for (const rawFileId of post.file_ids ?? []) {
+      const fileId = rawFileId.trim();
+      if (!fileId || seen.has(fileId)) {
+        continue;
+      }
+      seen.add(fileId);
+      manifest.push({ fileId, sourcePostId: post.id, status: "pending" });
+    }
+  }
+  return { fileIds: manifest.map((entry) => entry.fileId), manifest, caveat: params.caveat };
+}
+
+export function applyMattermostDownloadStatusToManifest(params: {
+  manifest: MattermostThreadAttachmentManifestEntry[];
+  mediaList: MattermostMediaInfo[];
+}): MattermostThreadAttachmentManifestEntry[] {
+  const mediaByFileId = new Map(
+    params.mediaList
+      .map((media, index) => [media.fileId ?? params.manifest[index]?.fileId, media] as const)
+      .filter(([fileId]) => Boolean(fileId)),
+  );
+  return params.manifest.map((entry) => {
+    const media = mediaByFileId.get(entry.fileId);
+    if (!media) {
+      return { ...entry, status: "missing" };
+    }
+    return {
+      ...entry,
+      status: "downloaded",
+      localPath: media.path,
+      contentType: media.contentType,
+    };
+  });
+}
+
+export function buildMattermostThreadAttachmentContext(params: {
+  manifest: MattermostThreadAttachmentManifestEntry[];
+  caveat?: string;
+}): string {
+  const lines: string[] = [];
+  if (params.caveat?.trim()) {
+    lines.push(`[Mattermost thread attachment caveat: ${params.caveat.trim()}]`);
+  }
+  if (params.manifest.length > 0) {
+    lines.push("Mattermost thread attachment manifest:");
+    params.manifest.forEach((entry, index) => {
+      const parts = [
+        `${index + 1}. file_id=${entry.fileId}`,
+        `source_post_id=${entry.sourcePostId}`,
+        `status=${entry.status ?? "pending"}`,
+      ];
+      if (entry.filename) {
+        parts.push(`filename=${entry.filename}`);
+      }
+      if (entry.contentType) {
+        parts.push(`content_type=${entry.contentType}`);
+      }
+      if (entry.localPath) {
+        parts.push(`local_path=${entry.localPath}`);
+      }
+      lines.push(parts.join(" "));
+    });
+  }
+  if (lines.length > 0) {
+    lines.push(
+      "Do not answer document-grounded requests from general memory or unrelated installed skills when the expected Mattermost attachments are missing, failed, or not yet synthesized. First cite/summarize the retrieved files, or explicitly say which files could not be retrieved/extracted.",
+    );
+  }
+  return lines.join("\n");
+}
+
+async function resolveMattermostThreadAttachments(params: {
+  client: Parameters<typeof fetchMattermostThread>[0];
+  triggeringPost: MattermostPost;
+  logger: { debug?: (message: string, meta?: Record<string, unknown>) => void };
+}): Promise<{
+  fileIds: string[];
+  manifest: MattermostThreadAttachmentManifestEntry[];
+  caveat?: string;
+}> {
+  const rootId = params.triggeringPost.root_id?.trim();
+  if (!rootId) {
+    return collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost });
+  }
+  try {
+    const thread = await fetchMattermostThread(params.client, rootId);
+    return collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost, thread });
+  } catch (err) {
+    const caveat = `Mattermost thread fetch failed for root post ${rootId}: ${String(err)}`;
+    params.logger.debug?.(`mattermost: ${caveat}`);
+    return collectMattermostThreadAttachmentRefs({
+      triggeringPost: params.triggeringPost,
+      caveat,
+    });
+  }
+}
+
+function appendAttachmentContextToBody(bodyText: string, attachmentContext: string): string {
+  return [bodyText, attachmentContext]
+    .filter((part) => part.trim())
+    .join("\n\n")
+    .trim();
 }
 
 function buildMattermostWsUrl(baseUrl: string): string {
@@ -1483,11 +1621,25 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           recordPendingHistory();
           return;
         }
-        const mediaList = await resolveMattermostMedia(post.file_ids);
+        const attachmentRefs = await resolveMattermostThreadAttachments({
+          client,
+          triggeringPost: post,
+          logger,
+        });
+        const mediaList = await resolveMattermostMedia(attachmentRefs.fileIds);
+        const attachmentManifest = applyMattermostDownloadStatusToManifest({
+          manifest: attachmentRefs.manifest,
+          mediaList,
+        });
+        const attachmentContext = buildMattermostThreadAttachmentContext({
+          manifest: attachmentManifest,
+          caveat: attachmentRefs.caveat,
+        });
         const mediaPlaceholder = buildMattermostAttachmentPlaceholder(mediaList);
         const bodySource = oncharTriggered ? oncharResult.stripped : rawText;
         const baseText = [bodySource, mediaPlaceholder].filter(Boolean).join("\n").trim();
         const bodyText = normalizeMention(baseText, botUsername);
+        const bodyTextForAgent = appendAttachmentContextToBody(bodyText, attachmentContext);
         if (!bodyText) {
           logVerboseMessage(
             `mattermost: drop group message (empty body after normalization channel=${channelId} sender=${senderId})`,
@@ -1510,7 +1662,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           directId: senderId,
         });
 
-        const textWithId = `${bodyText}\n[mattermost message id: ${post.id ?? "unknown"} channel: ${channelId}]`;
+        const textWithId = `${bodyTextForAgent}\n[mattermost message id: ${post.id ?? "unknown"} channel: ${channelId}]`;
         const body = core.channel.reply.formatInboundEnvelope({
           channel: "Mattermost",
           from: fromLabel,
@@ -1552,9 +1704,9 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
             : undefined;
         const ctxPayload = core.channel.reply.finalizeInboundContext({
           Body: combinedBody,
-          BodyForAgent: bodyText,
+          BodyForAgent: bodyTextForAgent,
           InboundHistory: inboundHistory,
-          RawBody: bodyText,
+          RawBody: bodyTextForAgent,
           CommandBody: commandBody,
           BodyForCommands: commandBody,
           From:
@@ -1583,6 +1735,8 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
             allMessageIds.length > 1 ? allMessageIds[allMessageIds.length - 1] : undefined,
           ReplyToId: effectiveReplyToId,
           MessageThreadId: effectiveReplyToId,
+          MattermostAttachmentManifest: attachmentManifest.length > 0 ? attachmentManifest : undefined,
+          MattermostAttachmentCaveat: attachmentRefs.caveat,
           Timestamp: typeof post.create_at === "number" ? post.create_at : undefined,
           WasMentioned: kind !== "direct" ? mentionDecision.effectiveWasMentioned : undefined,
           CommandAuthorized: commandAuthorized,
@@ -1933,6 +2087,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
       );
       return;
     }
+
   };
 
   const handleReactionEvent = async (payload: MattermostEventPayload) => {
