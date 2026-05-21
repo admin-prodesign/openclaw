@@ -40,6 +40,7 @@ Add plugin config under `plugins.entries.personal-memory.config`:
   "acknowledgeInstalledPluginTrustBoundary": false,
   "experimentalAutoCaptureAcknowledge": false,
   "storeRawIdentityForRepair": false,
+  "atRestEncryption": false,
   "admin": {
     "allowOwnerInspect": false
   }
@@ -85,7 +86,7 @@ CREATE INDEX IF NOT EXISTS idx_personal_memory_entries_subject_active
   ON personal_memory_entries(subject_key, deleted_at, updated_at DESC);
 ```
 
-`subject_key = HMAC-SHA256(localSubjectKeySecret, canonical(scopeId, channelProviderId, workspaceId, agentAccountId, senderId))`; CLI doctor must warn if a non-secret SHA-256 fallback is used outside tests. Canonicalization must trim and normalize exact casing/format rules for each component before hashing. If stable workspace/server identity, bot/account identity, or sender identity is unavailable, fail closed and inject/write nothing. Default to not storing raw sender id/display name; if `storeRawIdentityForRepair: true` is enabled, store only encrypted/redacted repair metadata and include it in export/deletion/backup docs. Track `subject_key_version` so HMAC secret generation, storage, backup, rotation, and loss behavior are explicit; rotation must re-key in one transaction and never merge subjects. Tool access must always resolve the subject from trusted context, never from model params.
+For MVP, `subject_key = sha256(canonical(scopeId, channelProviderId, workspaceId, agentAccountId, senderId))` is acceptable as a deterministic partition key; use HMAC only if OpenClaw already has a simple local secret facility. Canonicalization must trim and normalize exact casing/format rules for each component before hashing. If stable workspace/server identity, bot/account identity, or sender identity is unavailable, fail closed and inject/write nothing. Default to not storing raw sender id/display name; if `storeRawIdentityForRepair: true` is enabled, store only the minimum repair metadata needed and keep normal output redacted. At-rest content encryption, encrypted repair metadata, HMAC secret rotation, and encrypted migration backups are optional future hardening, not MVP requirements, because the MVP threat model prioritizes preventing accidental disclosure to other employees/channels. Tool access must always resolve the subject from trusted context, never from model params.
 
 ---
 
@@ -127,7 +128,7 @@ CREATE INDEX IF NOT EXISTS idx_personal_memory_entries_subject_active
 **Implementation notes:**
 
 - Read only `plugins.entries["personal-memory"].config` via SDK-provided config object passed to tool/hook contexts.
-- Defaults: `enabled: false`, `storePath` under the OpenClaw state/workspace directory when an SDK state path is available, otherwise `~/.openclaw/personal-memory.sqlite`, `scopeId: "agent:{agentId}"`, `prompt.maxItems: 12`, `prompt.maxChars: 1800`, `autoCapture.enabled: false`, `autoCapture.suggestOnly: true`, `admin.allowOwnerInspect: false`, `readsRequirePrivateConversation: true` for all read/list/export/inject paths, `acknowledgeInstalledPluginTrustBoundary: false`, `experimentalAutoCaptureAcknowledge: false`, and `storeRawIdentityForRepair: false`.
+- Defaults: `enabled: false`, `storePath` under the OpenClaw state/workspace directory when an SDK state path is available, otherwise `~/.openclaw/personal-memory.sqlite`, `scopeId: "agent:{agentId}"`, `prompt.maxItems: 12`, `prompt.maxChars: 1800`, `autoCapture.enabled: false`, `autoCapture.suggestOnly: true`, `admin.allowOwnerInspect: false`, `readsRequirePrivateConversation: true` for all read/list/export/inject paths, `acknowledgeInstalledPluginTrustBoundary: false`, `experimentalAutoCaptureAcknowledge: false`, `storeRawIdentityForRepair: false`, and `atRestEncryption: false`.
 - Reject unknown config properties through manifest schema.
 - Validate unsafe config combinations at startup: reject `enabled: true` with unreadable/unprotected `storePath`, non-absolute resolved path, shared/global `scopeId` without explicit `allowSharedScope: true`, `readsRequirePrivateConversation: false` for MVP, `autoCapture.enabled: true` unless paired with `experimentalAutoCaptureAcknowledge: true`, or installed third-party prompt/model hooks without a documented sensitive-context contract or explicit `acknowledgeInstalledPluginTrustBoundary: true`.
 - Emit a startup health finding if provider request logging/debug traces are enabled, redaction support is unavailable, or DB path permissions are unsafe.
@@ -200,9 +201,9 @@ CREATE INDEX IF NOT EXISTS idx_personal_memory_entries_subject_active
 - Open DB with WAL enabled when supported.
 - Set/verify DB, `-wal`, and `-shm` sidecar files are owner-readable/writable only (`0600`) where the platform allows it.
 - Use `PRAGMA user_version` migrations with an exclusive migration lock/transaction. Refuse to open a DB with a newer unsupported schema unless CLI uses an explicit `--force-readonly` maintenance mode.
-- Before destructive migrations, create an owner-only encrypted or same-permission backup; never create world-readable `.bak` copies. Downgrade/rollback behavior must fail closed rather than reading unknown schema incorrectly.
+- Before destructive migrations, create an owner-only same-permission backup; never create world-readable `.bak` copies. Encryption for migration backups is optional future hardening unless compliance requires it. Downgrade/rollback behavior must fail closed rather than reading unknown schema incorrectly.
 - Use transactions for profile upsert + entry insert/update/delete.
-- Maintain a monotonically increasing `revision` per subject; writes, forgets, purges, and HMAC rekeys increment revision. Prompt injection fetches fresh entries per run and must not cache personal memory across runs without revision validation.
+- Maintain a monotonically increasing `revision` per subject; writes, forgets, purges, and any future HMAC rekeys increment revision. Prompt injection fetches fresh entries per run and must not cache personal memory across runs without revision validation.
 - Never hard-delete by default; set `deleted_at` for normal forget operations.
 
 **Tests:**
@@ -214,7 +215,7 @@ CREATE INDEX IF NOT EXISTS idx_personal_memory_entries_subject_active
 - Store survives reopen.
 - Symlinked DB path, symlinked parent, and group/world-writable parent are refused.
 - Interrupted migration leaves DB in previous valid schema or fully migrated schema; newer schema is refused; migration backup permissions are `0600`.
-- HMAC rotation preserves isolation and refuses partial rotation.
+- If HMAC subject keys are enabled in a future hardening phase, rotation preserves isolation and refuses partial rotation.
 
 **Run:** `pnpm vitest run extensions/personal-memory/src/store.test.ts`
 
@@ -451,7 +452,7 @@ CREATE INDEX IF NOT EXISTS idx_personal_memory_entries_subject_active
 - Admin CLI commands.
 - Mattermost identity keying.
 - Public-channel caveat.
-- Backup and deletion expectations, including whether personal memory DB/WAL/SHM files, migration backups, logs, provider traces, and exported JSON are excluded from routine backups or encrypted with access controls, plus retention/purge implications and deletion SLA.
+- Backup and deletion expectations, including whether personal memory DB/WAL/SHM files, migration backups, logs, provider traces, and exported JSON are excluded from routine backups or covered by existing backup access controls, plus retention/purge implications and deletion SLA. At-rest encryption can be documented as optional future hardening rather than an MVP prerequisite.
 - Employee deletion request runbook: `forget`, `purge --vacuum`, WAL checkpoint, backup-retention note, verification command, and limitations for already-sent model/provider requests.
 - Logging/tracing/model-provider privacy: injected personal memory is sent to the configured model provider and can be observed by installed prompt hooks/plugins unless OpenClaw redacts/tag-protects it; employees/admins should know this trust boundary.
 - Rollout: enable for employee-facing PD One only, observe for one week in explicit/suggest-only mode, then decide whether to enable limited auto suggestions.
@@ -514,13 +515,13 @@ OPENCLAW_LOCAL_CHECK=0 node scripts/profile-extension-memory.mjs --extension per
 7. Try public channel list command and verify no private profile is dumped publicly.
 8. Run CLI doctor and verify no content leak in normal output.
 9. Run with debug/trace/file logging enabled and verify personal memory content, raw sender ids, subject tuples, tool args/results, export payloads, and SQLite paths are redacted from local logs. Provider request bodies may contain injected memory by necessity; local provider request logging must be off unless an explicit dangerous debug flag is set with a warning.
-10. Verify backup tooling does not copy plaintext personal-memory DB/WAL/SHM/migration backups unless approved and encrypted.
+10. Verify backup tooling either excludes personal-memory DB/WAL/SHM/migration backups or handles them under the existing approved backup access-control/retention policy; encryption is optional future hardening unless compliance requires it.
 11. Verify emergency kill switch: disable plugin, restart/reload, confirm tools and prompt injection are absent while preserving or purging DB per policy.
 
 **Operational incident checklist:**
 
 - Emergency kill switch: set plugin disabled, restart/reload, verify personal-memory tools/injection are absent, preserve DB for investigation or purge per policy.
-- Suspected leak: disable plugin, collect redacted diagnostics, identify affected subject hashes, purge logs/traces if possible, rotate `localSubjectKeySecret` only with a migration plan, and notify per policy.
+- Suspected leak: disable plugin, collect redacted diagnostics, identify affected subject hashes, purge logs/traces if possible, and notify per policy. If a future HMAC/encryption secret is enabled, rotate it only with a migration plan.
 - Canary metrics: count refused public attempts, identity-resolution failures, DB permission warnings, redaction failures, and unsafe-hook findings; metrics must not include content or raw sender ids.
 
 **Commit/push:**
@@ -581,7 +582,7 @@ git push admin pd-one/custom-openclaw-patches
 
 ### Independent review updates incorporated
 
-Independent reviews found additional risks that are now reflected above: hook contexts may need additive trusted sender/account/workspace/visibility/config fields; `before_agent_reply` and `before_prompt_build` must both fail closed without those fields; `registerMemoryPromptSupplement` is not safe for per-sender MVP injection; account/workspace ids must be non-null and stable; `agentId`/`scopeId` must be part of the key; SQLite package use must not violate extension boundaries; DB sidecar permissions and symlink paths need owner-only checks; migrations/rollbacks need fail-closed semantics; injected/listed memory must be non-persistent/ephemeral and redacted from logs; automatic suggestions need a safe private post-response path; CLI selectors must include scope/channel/workspace/account/sender; public/group channels must not receive injected memory or memory lists; and interaction/button paths must either use signed sender-bound nonces or fail closed.
+Independent reviews found additional risks that are now reflected above: hook contexts may need additive trusted sender/account/workspace/visibility/config fields; `before_agent_reply` and `before_prompt_build` must both fail closed without those fields; `registerMemoryPromptSupplement` is not safe for per-sender MVP injection; account/workspace ids must be non-null and stable; `agentId`/`scopeId` must be part of the key; SQLite package use must not violate extension boundaries; DB sidecar permissions and symlink paths need owner-only checks; migrations/rollbacks need fail-closed semantics; injected/listed memory must be non-persistent/ephemeral and redacted from logs; automatic suggestions need a safe private post-response path; CLI selectors must include scope/provider/workspace/account/sender; public/group channels must not receive injected memory or memory lists; interaction/button paths must either use signed sender-bound nonces or fail closed; and encryption/HMAC rotation are optional future hardening rather than MVP requirements.
 
 ### Final decision
 
