@@ -1,0 +1,23 @@
+{
+  "name": "@openclaw/personal-memory",
+  "version": "2026.4.6",
+  "private": true,
+  "description": "OpenClaw personal employee memory plugin",
+  "type": "module",
+  "devDependencies": {
+    "openclaw": "workspace:*"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.6"
+  },
+  "peerDependenciesMeta": {
+    "openclaw": {
+      "optional": true
+    }
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
