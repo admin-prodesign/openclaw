@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
+import { handlePersonalMemoryCommand } from "./src/commands.js";
 import { resolvePersonalMemoryConfig } from "./src/config.js";
 import type { PersonalMemoryIdentityContext } from "./src/identity.js";
 import { createPersonalMemoryPromptHook } from "./src/prompt.js";
@@ -20,6 +21,28 @@ export {
 export { renderPersonalMemoryPromptBlock } from "./src/prompt.js";
 export { PersonalMemoryStore } from "./src/store.js";
 export { createPersonalMemoryTools } from "./src/tools.js";
+
+function eventTextField(value: unknown, depth = 0): string {
+  if (depth > 4) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => eventTextField(entry, depth + 1)).filter(Boolean).join("\n");
+  }
+  if (typeof value === "object" && value !== null) {
+    const record = value as Record<string, unknown>;
+    for (const key of ["text", "body", "message", "content", "cleanedBody"]) {
+      const text = eventTextField(record[key], depth + 1);
+      if (text) {
+        return text;
+      }
+    }
+  }
+  return "";
+}
 
 function stringField(source: Record<string, unknown>, names: string[]): string | undefined {
   for (const name of names) {
@@ -98,7 +121,6 @@ export default definePluginEntry({
   id: "personal-memory",
   name: "Personal Memory",
   description: "Private per-employee memory profiles keyed from trusted runtime identity.",
-  kind: "memory",
   register(api: OpenClawPluginApi) {
     const config = resolvePersonalMemoryConfig(api.pluginConfig, {
       stateDir: defaultStateDir(api),
@@ -108,7 +130,7 @@ export default definePluginEntry({
     }
     const store = new PersonalMemoryStore({ storePath: config.storePath });
 
-    api.registerTool((ctx) =>
+    api.registerTool((ctx: unknown) =>
       createPersonalMemoryTools({
         config,
         store,
@@ -118,12 +140,40 @@ export default definePluginEntry({
 
     api.on(
       "before_prompt_build",
-      async (_event, ctx) =>
+      async (_event: unknown, ctx: unknown) =>
         createPersonalMemoryPromptHook({
           config,
           store,
           context: extractPersonalMemoryIdentityContext(ctx),
         }) ?? {},
+    );
+
+    api.on(
+      "before_agent_reply",
+      async (event: { cleanedBody?: unknown } | undefined, ctx: unknown) => {
+        const commandText = eventTextField(event?.cleanedBody);
+        if (!commandText.trim()) {
+          return { handled: false };
+        }
+        const identityContext = extractPersonalMemoryIdentityContext(ctx);
+        const handled = handlePersonalMemoryCommand(
+          {
+            config,
+            store,
+            context: identityContext,
+          },
+          commandText,
+        );
+        if (!handled.handled) {
+          return { handled: false };
+        }
+        return {
+          handled: true,
+          reply: { text: handled.response },
+          reason: "personal_memory_command",
+        };
+      },
+      { priority: 900, timeoutMs: 10_000 },
     );
   },
 });

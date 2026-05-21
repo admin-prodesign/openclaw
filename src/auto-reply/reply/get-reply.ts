@@ -24,6 +24,7 @@ import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import type { GetReplyOptions } from "../get-reply-options.types.js";
 import { DEFAULT_HEARTBEAT_ACK_MAX_CHARS, stripHeartbeatToken } from "../heartbeat.js";
 import type { ReplyPayload } from "../reply-payload.js";
+import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
 import type { MsgContext } from "../templating.js";
 import { normalizeVerboseLevel } from "../thinking.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -92,6 +93,31 @@ const linkUnderstandingApplyRuntimeLoader = createLazyImportLoader(
 const commandsCoreRuntimeLoader = createLazyImportLoader(
   () => import("./commands-core.runtime.js"),
 );
+
+function resolveHookConversationVisibility(chatType: string | undefined):
+  | "direct"
+  | "private_channel"
+  | "public_channel"
+  | "group"
+  | "unknown" {
+  switch (normalizeOptionalString(chatType)?.toLowerCase()) {
+    case "direct":
+    case "dm":
+    case "im":
+      return "direct";
+    case "private":
+    case "private_channel":
+      return "private_channel";
+    case "channel":
+    case "public":
+    case "public_channel":
+      return "public_channel";
+    case "group":
+      return "group";
+    default:
+      return "unknown";
+  }
+}
 
 function loadSessionResetModelRuntime() {
   return sessionResetModelRuntimeLoader.load();
@@ -892,6 +918,10 @@ export async function getReplyFromConfig(
         originatingChannel: sessionCtx.OriginatingChannel,
         provider: sessionCtx.Provider,
       });
+      const hookConversationVisibility = resolveHookConversationVisibility(sessionCtx.ChatType);
+      const hookConversationIsDirect = hookConversationVisibility === "direct";
+      const hookAgentAccountId = normalizeOptionalString(sessionCtx.AccountId);
+      const hookWorkspaceId = normalizeOptionalString(sessionCtx.GroupSpace);
       const hookResult = await traceGetReplyPhase("reply.before_agent_reply_hooks", () =>
         hookRunner.runBeforeAgentReply(
           { cleanedBody },
@@ -900,6 +930,16 @@ export async function getReplyFromConfig(
             sessionKey: agentSessionKey,
             sessionId,
             workspaceDir,
+            agentAccountId: hookAgentAccountId,
+            requesterSenderId: hookConversationIsDirect
+              ? normalizeOptionalString(sessionCtx.SenderId)
+              : undefined,
+            requesterSenderName: hookConversationIsDirect
+              ? normalizeOptionalString(sessionCtx.SenderName)
+              : undefined,
+            workspaceId: hookWorkspaceId,
+            serverUrlHash: hookWorkspaceId ? undefined : hookAgentAccountId,
+            conversationVisibility: hookConversationVisibility,
             trigger: opts?.isHeartbeat ? "heartbeat" : "user",
             ...buildAgentHookContextChannelFields({
               sessionKey: agentSessionKey,
@@ -911,7 +951,9 @@ export async function getReplyFromConfig(
         ),
       );
       if (hookResult?.handled) {
-        return hookResult.reply ?? { text: SILENT_REPLY_TOKEN };
+        return hookResult.reply
+          ? markReplyPayloadForSourceSuppressionDelivery(hookResult.reply)
+          : { text: SILENT_REPLY_TOKEN };
       }
     }
   }

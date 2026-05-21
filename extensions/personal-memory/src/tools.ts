@@ -1,4 +1,3 @@
-import { Type } from "@sinclair/typebox";
 import { jsonResult, readStringParam } from "openclaw/plugin-sdk/provider-web-search";
 import type { PersonalMemoryConfig } from "./config.js";
 import {
@@ -82,23 +81,24 @@ export function forgetPersonalMemoryForCurrentSubject(
   return { ok: true as const, deleted };
 }
 
-const RememberSchema = Type.Object(
-  {
-    category: Type.Union([
-      Type.Literal("preference"),
-      Type.Literal("role"),
-      Type.Literal("workflow"),
-      Type.Literal("language"),
-      Type.Literal("format"),
-      Type.Literal("responsibility"),
-      Type.Literal("other"),
-    ]),
-    content: Type.String({ maxLength: 500 }),
+const RememberSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    category: {
+      enum: ["preference", "role", "workflow", "language", "format", "responsibility", "other"],
+    },
+    content: { type: "string", maxLength: 500 },
   },
-  { additionalProperties: false },
-);
+  required: ["category", "content"],
+} as const;
 
-const ForgetSchema = Type.Object({ id: Type.String() }, { additionalProperties: false });
+const ForgetSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: { id: { type: "string" } },
+  required: ["id"],
+} as const;
 
 export function createPersonalMemoryTools(deps: PersonalMemoryToolDeps) {
   if (!resolveToolSubject(deps)) {
@@ -109,7 +109,7 @@ export function createPersonalMemoryTools(deps: PersonalMemoryToolDeps) {
       name: "personal_memory_list",
       label: "List Personal Memory",
       description: "List private memory for the current sender in this direct conversation only.",
-      parameters: Type.Object({}, { additionalProperties: false }),
+      parameters: { type: "object", additionalProperties: false, properties: {} },
       execute: async () => jsonResult(listPersonalMemoryForCurrentSubject(deps)),
     },
     {

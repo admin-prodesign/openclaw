@@ -2,7 +2,16 @@
   "id": "personal-memory",
   "name": "Personal Memory",
   "description": "Private per-employee memory profiles keyed from trusted runtime identity.",
-  "kind": "memory",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "personal_memory_list",
+      "personal_memory_remember",
+      "personal_memory_forget"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
