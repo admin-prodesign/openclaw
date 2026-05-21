@@ -608,6 +608,30 @@ export function remapInjectedContextFilesToWorkspace(params: {
   });
 }
 
+type TrustedConversationVisibility =
+  | "direct"
+  | "private_channel"
+  | "public_channel"
+  | "group"
+  | "unknown";
+
+function resolveTrustedConversationVisibility(params: {
+  sessionKey?: string;
+  groupId?: string | null;
+}): TrustedConversationVisibility {
+  if (params.groupId?.trim()) {
+    return "public_channel";
+  }
+  const lower = params.sessionKey?.toLowerCase() ?? "";
+  if (lower.includes(":direct:")) {
+    return "direct";
+  }
+  if (lower.includes(":group:")) {
+    return "public_channel";
+  }
+  return "unknown";
+}
+
 function summarizeMessagePayload(msg: AgentMessage): { textChars: number; imageBlocks: number } {
   const content = (msg as { content?: unknown }).content;
   if (typeof content === "string") {
@@ -3486,6 +3510,16 @@ export async function runEmbeddedAttempt(
           workspaceDir: params.workspaceDir,
           modelProviderId: params.model.provider,
           modelId: params.model.id,
+          messageProvider: params.messageProvider ?? undefined,
+          channelProviderId: params.messageChannel ?? params.messageProvider ?? undefined,
+          agentAccountId: params.agentAccountId,
+          workspaceId: params.groupSpace ?? undefined,
+          requesterSenderId: params.senderId ?? undefined,
+          currentChannelId: params.currentChannelId ?? undefined,
+          conversationVisibility: resolveTrustedConversationVisibility({
+            sessionKey: params.sessionKey,
+            groupId: params.groupId,
+          }),
           trigger: params.trigger,
           ...buildAgentHookContextChannelFields(params),
         };

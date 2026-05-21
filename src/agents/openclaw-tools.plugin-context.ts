@@ -21,12 +21,32 @@ export type OpenClawPluginToolOptions = {
   requesterSenderId?: string | null;
   requesterAgentIdOverride?: string;
   senderIsOwner?: boolean;
+  agentGroupId?: string | null;
+  agentGroupSpace?: string | null;
+  currentChannelId?: string | null;
   sessionId?: string;
   sandboxBrowserBridgeUrl?: string;
   allowHostBrowserControl?: boolean;
   sandboxed?: boolean;
   allowGatewaySubagentBinding?: boolean;
 };
+
+function resolveConversationVisibility(params: {
+  sessionKey?: string;
+  groupId?: string | null;
+}): "direct" | "private_channel" | "public_channel" | "group" | "unknown" {
+  if (params.groupId?.trim()) {
+    return "public_channel";
+  }
+  const lower = params.sessionKey?.toLowerCase() ?? "";
+  if (lower.includes(":direct:")) {
+    return "direct";
+  }
+  if (lower.includes(":group:")) {
+    return "public_channel";
+  }
+  return "unknown";
+}
 
 export function resolveOpenClawPluginToolInputs(params: {
   options?: OpenClawPluginToolOptions;
@@ -82,6 +102,13 @@ export function resolveOpenClawPluginToolInputs(params: {
       agentAccountId: options?.agentAccountId,
       deliveryContext,
       requesterSenderId: options?.requesterSenderId ?? undefined,
+      channelProviderId: options?.agentChannel,
+      workspaceId: options?.agentGroupSpace ?? undefined,
+      currentChannelId: options?.currentChannelId ?? undefined,
+      conversationVisibility: resolveConversationVisibility({
+        sessionKey: options?.agentSessionKey,
+        groupId: options?.agentGroupId,
+      }),
       senderIsOwner: options?.senderIsOwner ?? undefined,
       sandboxed: options?.sandboxed,
     },

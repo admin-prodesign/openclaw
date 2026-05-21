@@ -300,6 +300,57 @@ export type OpenClawPluginConfigSchema = {
   jsonSchema?: JsonSchemaObject;
 };
 
+/** Trusted execution context passed to plugin-owned agent tool factories. */
+export type OpenClawPluginToolContext = {
+  config?: OpenClawConfig;
+  /** Active runtime-resolved config snapshot when one is available. */
+  runtimeConfig?: OpenClawConfig;
+  workspaceDir?: string;
+  agentDir?: string;
+  agentId?: string;
+  sessionKey?: string;
+  /** Ephemeral session UUID - regenerated on /new and /reset. Use for per-conversation isolation. */
+  sessionId?: string;
+  browser?: {
+    sandboxBridgeUrl?: string;
+    allowHostControl?: boolean;
+  };
+  messageChannel?: string;
+  agentAccountId?: string;
+  /** Trusted ambient delivery route for the active agent/session. */
+  deliveryContext?: DeliveryContext;
+  /** Trusted sender id from inbound context (runtime-provided, not tool args). */
+  requesterSenderId?: string;
+  /** Trusted provider/channel id for the active inbound route (e.g. mattermost, telegram). */
+  channelProviderId?: string;
+  /** Trusted workspace/team/server id for the active inbound route, when the channel provides one. */
+  workspaceId?: string;
+  /** Trusted current conversation id/target for the active inbound route. */
+  currentChannelId?: string;
+  /** Trusted conversation visibility for privacy-sensitive plugins. */
+  conversationVisibility?: "direct" | "private_channel" | "public_channel" | "group" | "unknown";
+  /** Whether the trusted sender is an owner. */
+  senderIsOwner?: boolean;
+  sandboxed?: boolean;
+};
+
+export type OpenClawPluginToolFactory = (
+  ctx: OpenClawPluginToolContext,
+) => AnyAgentTool | AnyAgentTool[] | null | undefined;
+
+export type OpenClawPluginToolOptions = {
+  name?: string;
+  names?: string[];
+  optional?: boolean;
+};
+
+export type OpenClawPluginHookOptions = {
+  entry?: HookEntry;
+  name?: string;
+  description?: string;
+  register?: boolean;
+};
+
 export type ProviderAuthKind = "oauth" | "api_key" | "token" | "device_code" | "custom";
 
 /** Standard result payload returned by provider auth methods. */
@@ -2870,3 +2921,4 @@ export type OpenClawPluginApi = {
 
 // Plugin hook contracts now live in hook-types.ts so hook runners can import a
 // leaf contract surface instead of pulling the full plugin runtime barrel.
+

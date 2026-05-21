@@ -125,23 +125,43 @@ describe("buildInboundMetaSystemPrompt", () => {
     expect(first).toBe(second);
   });
 
-  it("does not include per-turn message identifiers (cache stability)", () => {
-    const prompt = buildInboundMetaSystemPrompt({
-      MessageSid: "123",
-      MessageSidFull: "123",
-      ReplyToId: "99",
-      SenderId: "289522496",
-      OriginatingTo: "telegram:5494292670",
-      OriginatingChannel: "telegram",
-      Provider: "telegram",
-      Surface: "telegram",
-      ChatType: "direct",
-    } as TemplateContext);
+  it("keeps per-turn message identifiers out of trusted metadata but includes direct sender id", () => {
+    const prompt = buildInboundMetaSystemPrompt(
+      {
+        MessageSid: "123",
+        MessageSidFull: "123",
+        ReplyToId: "99",
+        SenderId: "289522496",
+        OriginatingTo: "telegram:5494292670",
+        OriginatingChannel: "telegram",
+        Provider: "telegram",
+        Surface: "telegram",
+        ChatType: "direct",
+      } as TemplateContext,
+      { includeFormattingHints: false },
+    );
 
     const payload = parseInboundMetaPayload(prompt);
     expect(payload["message_id"]).toBeUndefined();
     expect(payload["message_id_full"]).toBeUndefined();
     expect(payload["reply_to_id"]).toBeUndefined();
+    expect(payload["sender_id"]).toBe("289522496");
+  });
+
+  it("does not include sender_id in trusted metadata for group chats", () => {
+    const prompt = buildInboundMetaSystemPrompt(
+      {
+        SenderId: "289522496",
+        OriginatingTo: "telegram:-1001249586642",
+        OriginatingChannel: "telegram",
+        Provider: "telegram",
+        Surface: "telegram",
+        ChatType: "group",
+      } as TemplateContext,
+      { includeFormattingHints: false },
+    );
+
+    const payload = parseInboundMetaPayload(prompt);
     expect(payload["sender_id"]).toBeUndefined();
   });
 
