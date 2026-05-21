@@ -77,6 +77,7 @@ export function buildInboundMetaSystemPrompt(
     provider: safeTrim(ctx.Provider),
     surface: safeTrim(ctx.Surface),
     chat_type: chatType ?? (isDirect ? "direct" : undefined),
+    sender_id: isDirect ? safeTrim(ctx.SenderId) : undefined,
     response_format:
       options?.includeFormattingHints === false ? undefined : resolveInboundFormattingHints(ctx),
   };

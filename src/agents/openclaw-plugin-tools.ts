@@ -16,6 +16,8 @@ type ResolveOpenClawPluginToolsOptions = {
   agentThreadId?: string | number;
   requesterSenderId?: string | null;
   senderIsOwner?: boolean;
+  agentGroupId?: string | null;
+  agentGroupSpace?: string | null;
   allowGatewaySubagentBinding?: boolean;
   sandboxed?: boolean;
   agentSessionKey?: string;

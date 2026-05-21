@@ -157,6 +157,14 @@ export type OpenClawPluginToolContext = {
   deliveryContext?: DeliveryContext;
   /** Trusted sender id from inbound context (runtime-provided, not tool args). */
   requesterSenderId?: string;
+  /** Trusted provider/channel id for the active inbound route (e.g. mattermost, telegram). */
+  channelProviderId?: string;
+  /** Trusted workspace/team/server id for the active inbound route, when the channel provides one. */
+  workspaceId?: string;
+  /** Trusted current conversation id/target for the active inbound route. */
+  currentChannelId?: string;
+  /** Trusted conversation visibility for privacy-sensitive plugins. */
+  conversationVisibility?: "direct" | "private_channel" | "public_channel" | "group" | "unknown";
   /** Whether the trusted sender is an owner. */
   senderIsOwner?: boolean;
   sandboxed?: boolean;
@@ -2328,6 +2336,18 @@ export type PluginHookAgentContext = {
   /** Resolved model id for this run (for example "gpt-5.4"). */
   modelId?: string;
   messageProvider?: string;
+  /** Trusted provider/channel id for the active inbound route (e.g. mattermost, telegram). */
+  channelProviderId?: string;
+  /** Trusted bot/account id for the active inbound route. */
+  agentAccountId?: string;
+  /** Trusted workspace/team/server id for the active inbound route, when available. */
+  workspaceId?: string;
+  /** Trusted requester sender id from inbound context (runtime-provided, not prompt/tool args). */
+  requesterSenderId?: string;
+  /** Trusted current conversation id/target for the active inbound route. */
+  currentChannelId?: string;
+  /** Trusted conversation visibility for privacy-sensitive plugins. */
+  conversationVisibility?: "direct" | "private_channel" | "public_channel" | "group" | "unknown";
   /** What initiated this agent run: "user", "heartbeat", "cron", or "memory". */
   trigger?: string;
   /** Channel identifier (e.g. "telegram", "discord", "whatsapp"). */

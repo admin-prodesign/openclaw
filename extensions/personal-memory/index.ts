@@ -1,3 +1,4 @@
+import os from "node:os";
 import path from "node:path";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-runtime";
@@ -30,32 +31,67 @@ function stringField(source: Record<string, unknown>, names: string[]): string |
   return undefined;
 }
 
-function extractIdentityContext(raw: unknown): PersonalMemoryIdentityContext {
+function nestedStringField(
+  source: Record<string, unknown>,
+  objectName: string,
+  names: string[],
+): string | undefined {
+  const nested = source[objectName];
+  if (typeof nested !== "object" || nested === null) {
+    return undefined;
+  }
+  return stringField(nested as Record<string, unknown>, names);
+}
+
+function inferConversationVisibility(
+  source: Record<string, unknown>,
+): PersonalMemoryIdentityContext["conversationVisibility"] {
+  const explicit = source.conversationVisibility;
+  if (
+    explicit === "direct" ||
+    explicit === "private_channel" ||
+    explicit === "public_channel" ||
+    explicit === "group"
+  ) {
+    return explicit;
+  }
+  const sessionKey = stringField(source, ["sessionKey"]);
+  const lower = sessionKey?.toLowerCase() ?? "";
+  if (lower.includes(":direct:")) {
+    return "direct";
+  }
+  if (lower.includes(":group:")) {
+    return "public_channel";
+  }
+  return "unknown";
+}
+
+export function extractPersonalMemoryIdentityContext(raw: unknown): PersonalMemoryIdentityContext {
   const source = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
   return {
     agentId: stringField(source, ["agentId"]),
-    requesterSenderId: stringField(source, ["requesterSenderId", "senderId"]),
+    requesterSenderId: stringField(source, ["requesterSenderId"]),
     requesterSenderName: stringField(source, ["requesterSenderName", "senderName"]),
     workspaceId: stringField(source, ["workspaceId", "teamId", "serverId"]),
     serverUrlHash: stringField(source, ["serverUrlHash"]),
-    agentAccountId: stringField(source, ["agentAccountId", "accountId"]),
-    channelProviderId: stringField(source, ["channelProviderId", "providerId", "messageProvider"]),
-    conversationVisibility:
-      source.conversationVisibility === "direct"
-        ? "direct"
-        : source.conversationVisibility === "private_channel"
-          ? "private_channel"
-          : source.conversationVisibility === "public_channel"
-            ? "public_channel"
-            : source.conversationVisibility === "group"
-              ? "group"
-              : "unknown",
+    agentAccountId:
+      stringField(source, ["agentAccountId", "accountId"]) ??
+      nestedStringField(source, "deliveryContext", ["accountId"]),
+    channelProviderId:
+      stringField(source, [
+        "channelProviderId",
+        "providerId",
+        "messageProvider",
+        "messageChannel",
+      ]) ?? nestedStringField(source, "deliveryContext", ["channel"]),
+    conversationVisibility: inferConversationVisibility(source),
   };
 }
 
 function defaultStateDir(api: OpenClawPluginApi): string | undefined {
-  const root = api.config?.runtime?.stateDir;
-  return typeof root === "string" ? path.join(root, "personal-memory") : undefined;
+  void api;
+  const root = process.env.OPENCLAW_STATE_DIR ?? path.join(os.homedir(), ".openclaw");
+  return path.join(root, "personal-memory");
 }
 
 export default definePluginEntry({
@@ -76,7 +112,7 @@ export default definePluginEntry({
       createPersonalMemoryTools({
         config,
         store,
-        context: extractIdentityContext(ctx),
+        context: extractPersonalMemoryIdentityContext(ctx),
       }),
     );
 
@@ -86,7 +122,7 @@ export default definePluginEntry({
         createPersonalMemoryPromptHook({
           config,
           store,
-          context: extractIdentityContext(ctx),
+          context: extractPersonalMemoryIdentityContext(ctx),
         }) ?? {},
     );
   },

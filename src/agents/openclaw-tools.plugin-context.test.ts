@@ -39,6 +39,56 @@ describe("openclaw plugin tool context", () => {
     );
   });
 
+  it("forwards trusted conversation metadata for private personal-memory plugins", () => {
+    const result = resolveOpenClawPluginToolInputs({
+      options: {
+        config: {} as never,
+        agentSessionKey: "agent:pd-one:mattermost:direct:U123",
+        agentChannel: "mattermost" as never,
+        agentAccountId: "bot-account",
+        agentTo: "U123",
+        requesterSenderId: "U123",
+        agentGroupSpace: "team-1",
+        currentChannelId: "U123",
+      },
+    });
+
+    expect(result.context).toEqual(
+      expect.objectContaining({
+        agentId: "pd-one",
+        messageChannel: "mattermost",
+        channelProviderId: "mattermost",
+        agentAccountId: "bot-account",
+        requesterSenderId: "U123",
+        workspaceId: "team-1",
+        currentChannelId: "U123",
+        conversationVisibility: "direct",
+      }),
+    );
+  });
+
+  it("marks group session keys as public channel context for privacy-sensitive plugins", () => {
+    const result = resolveOpenClawPluginToolInputs({
+      options: {
+        config: {} as never,
+        agentSessionKey: "agent:pd-one:mattermost:group:channel-1",
+        agentChannel: "mattermost" as never,
+        agentAccountId: "bot-account",
+        agentTo: "channel-1",
+        requesterSenderId: "U123",
+        agentGroupSpace: "team-1",
+        agentGroupId: "channel-1",
+      },
+    });
+
+    expect(result.context).toEqual(
+      expect.objectContaining({
+        conversationVisibility: "public_channel",
+        workspaceId: "team-1",
+      }),
+    );
+  });
+
   it("infers the default agent workspace when workspaceDir is omitted", () => {
     const workspaceDir = path.join(process.cwd(), "tmp-main-workspace");
     const result = resolveOpenClawPluginToolInputs({
