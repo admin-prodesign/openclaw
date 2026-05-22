@@ -518,6 +518,85 @@ export type MattermostThreadAttachmentManifestEntry = {
   failureReason?: string;
 };
 
+export function collectMattermostThreadPosts(params: {
+  triggeringPost: MattermostPost;
+  thread?: MattermostThread | null;
+}): MattermostPost[] {
+  if (!params.thread) {
+    return [params.triggeringPost];
+  }
+  const postsById = params.thread.posts ?? {};
+  const orderedIds = params.thread.order ?? [];
+  const orderIndex = new Map<string, number>();
+  orderedIds.forEach((id, index) => orderIndex.set(id, index));
+  const seen = new Set<string>();
+  const posts: MattermostPost[] = [];
+  for (const postId of orderedIds) {
+    const post = postsById[postId];
+    if (!post || seen.has(post.id)) {
+      continue;
+    }
+    seen.add(post.id);
+    posts.push(post);
+  }
+  for (const post of Object.values(postsById)) {
+    if (seen.has(post.id)) {
+      continue;
+    }
+    seen.add(post.id);
+    posts.push(post);
+  }
+  if (params.triggeringPost.id && !seen.has(params.triggeringPost.id)) {
+    posts.push(params.triggeringPost);
+  }
+  return posts.toSorted((left, right) => {
+    const leftTime = typeof left.create_at === "number" ? left.create_at : undefined;
+    const rightTime = typeof right.create_at === "number" ? right.create_at : undefined;
+    if (leftTime !== undefined && rightTime !== undefined && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+    return (orderIndex.get(left.id) ?? Number.MAX_SAFE_INTEGER) -
+      (orderIndex.get(right.id) ?? Number.MAX_SAFE_INTEGER);
+  });
+}
+
+function truncateMattermostThreadText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxChars - 12)).trimEnd()}…[truncated]`;
+}
+
+export function buildMattermostThreadTextContext(params: {
+  posts: MattermostPost[];
+  triggeringPostId?: string | null;
+  senderLabelForPost?: (post: MattermostPost) => string;
+  maxPosts?: number;
+  maxPostChars?: number;
+}): string {
+  const maxPosts = Math.max(1, params.maxPosts ?? 40);
+  const maxPostChars = Math.max(80, params.maxPostChars ?? 1200);
+  const postsWithText = params.posts.filter((post) => normalizeOptionalString(post.message));
+  if (postsWithText.length <= 1) {
+    return "";
+  }
+  const selected = postsWithText.slice(Math.max(0, postsWithText.length - maxPosts));
+  const lines = ["Full Mattermost thread context (oldest to newest, fetched from Mattermost REST):"];
+  selected.forEach((post, index) => {
+    const sender = params.senderLabelForPost?.(post) || post.user_id || "unknown";
+    const marker = post.id === params.triggeringPostId ? " [current message]" : "";
+    const timestamp = typeof post.create_at === "number" ? ` timestamp=${post.create_at}` : "";
+    lines.push(
+      `${index + 1}. post_id=${post.id}${marker} sender=${sender}${timestamp}: ${truncateMattermostThreadText(
+        post.message ?? "",
+        maxPostChars,
+      )}`,
+    );
+  });
+  return lines.join("\n");
+}
+
 export function collectMattermostThreadAttachmentRefs(params: {
   triggeringPost: MattermostPost;
   thread?: MattermostThread | null;
@@ -527,17 +606,10 @@ export function collectMattermostThreadAttachmentRefs(params: {
   manifest: MattermostThreadAttachmentManifestEntry[];
   caveat?: string;
 } {
-  const postsById = params.thread?.posts ?? {};
-  const orderedPosts = params.thread
-    ? [
-        ...params.thread.order.map((postId) => postsById[postId]).filter(Boolean),
-        ...Object.values(postsById).filter((post) => !params.thread?.order.includes(post.id)),
-        ...(params.triggeringPost.id && !postsById[params.triggeringPost.id]
-          ? [params.triggeringPost]
-          : []),
-      ]
-    : [];
-  const candidates = orderedPosts.length > 0 ? orderedPosts : [params.triggeringPost];
+  const candidates = collectMattermostThreadPosts({
+    triggeringPost: params.triggeringPost,
+    thread: params.thread,
+  });
   const seen = new Set<string>();
   const manifest: MattermostThreadAttachmentManifestEntry[] = [];
   for (const post of candidates) {
@@ -636,10 +708,14 @@ async function resolveMattermostThreadAttachments(params: {
 }): Promise<{
   fileIds: string[];
   manifest: MattermostThreadAttachmentManifestEntry[];
+  threadPosts: MattermostPost[];
   caveat?: string;
 }> {
   const rootId = params.triggeringPost.root_id?.trim();
-  const enrich = async (refs: ReturnType<typeof collectMattermostThreadAttachmentRefs>) => {
+  const enrich = async (
+    refs: ReturnType<typeof collectMattermostThreadAttachmentRefs>,
+    threadPosts: MattermostPost[],
+  ) => {
     const manifest = await Promise.all(
       refs.manifest.map(async (entry) => {
         try {
@@ -658,15 +734,22 @@ async function resolveMattermostThreadAttachments(params: {
         }
       }),
     );
-    return { ...refs, manifest };
+    return { ...refs, manifest, threadPosts };
   };
 
   if (!rootId) {
-    return await enrich(collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost }));
+    return await enrich(
+      collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost }),
+      [params.triggeringPost],
+    );
   }
   try {
     const thread = await fetchMattermostThread(params.client, rootId);
-    return await enrich(collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost, thread }));
+    const threadPosts = collectMattermostThreadPosts({ triggeringPost: params.triggeringPost, thread });
+    return await enrich(
+      collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost, thread }),
+      threadPosts,
+    );
   } catch (err) {
     const caveat = `Mattermost thread fetch failed for root post ${rootId}: ${String(err)}`;
     params.logger.debug?.(`mattermost: ${caveat}`);
@@ -675,6 +758,7 @@ async function resolveMattermostThreadAttachments(params: {
         triggeringPost: params.triggeringPost,
         caveat,
       }),
+      [params.triggeringPost],
     );
   }
 }
@@ -1670,6 +1754,12 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           triggeringPost: post,
           logger,
         });
+        const threadTextContext = buildMattermostThreadTextContext({
+          posts: attachmentRefs.threadPosts,
+          triggeringPostId: post.id,
+          senderLabelForPost: (threadPost) =>
+            threadPost.id === post.id ? senderName : threadPost.user_id || "unknown",
+        });
         const mediaList = await resolveMattermostMedia(attachmentRefs.fileIds);
         const attachmentManifest = applyMattermostDownloadStatusToManifest({
           manifest: attachmentRefs.manifest,
@@ -1684,7 +1774,10 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
         const bodySource = oncharTriggered ? oncharResult.stripped : rawText;
         const baseText = [bodySource, mediaPlaceholder].filter(Boolean).join("\n").trim();
         const bodyText = normalizeMention(baseText, botUsername);
-        const bodyTextForAgent = appendAttachmentContextToBody(bodyText, attachmentContext);
+        const bodyTextForAgent = appendAttachmentContextToBody(
+          appendAttachmentContextToBody(bodyText, threadTextContext),
+          attachmentContext,
+        );
         if (!bodyText) {
           logVerboseMessage(
             `mattermost: drop group message (empty body after normalization channel=${channelId} sender=${senderId})`,

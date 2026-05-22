@@ -15,6 +15,8 @@ import {
   collectMattermostThreadAttachmentRefs,
   applyMattermostDownloadStatusToManifest,
   buildMattermostThreadAttachmentContext,
+  buildMattermostThreadTextContext,
+  collectMattermostThreadPosts,
   resolveMattermostReactionChannelId,
   resolveMattermostEffectiveReplyToId,
   resolveMattermostReplyRootId,
@@ -122,6 +124,60 @@ function mockCallArg(
 }
 
 describe("mattermost thread attachment context", () => {
+  it("orders fetched thread posts chronologically before building file and text context", () => {
+    const triggeringPost = {
+      id: "reply-2",
+      user_id: "user-2",
+      message: "@pd-one Correct them to June dates, keeping the day of the month the same",
+      root_id: "root-1",
+      create_at: 3000,
+      file_ids: ["current-file"],
+    };
+    const thread = {
+      order: ["reply-2", "root-1", "reply-1"],
+      posts: {
+        "reply-2": triggeringPost,
+        "root-1": {
+          id: "root-1",
+          user_id: "user-1",
+          message: "Scheduling kickoff",
+          create_at: 1000,
+          file_ids: ["root-file"],
+        },
+        "reply-1": {
+          id: "reply-1",
+          user_id: "bot-1",
+          message:
+            "Flagged row needing review: row 1334 dates 2026-05-06, 2026-05-07, 2026-05-29",
+          root_id: "root-1",
+          create_at: 2000,
+          file_ids: ["bot-file"],
+        },
+      },
+    };
+
+    const posts = collectMattermostThreadPosts({ triggeringPost, thread });
+    expect(posts.map((post) => post.id)).toEqual(["root-1", "reply-1", "reply-2"]);
+    expect(
+      collectMattermostThreadAttachmentRefs({ triggeringPost, thread }).fileIds,
+    ).toEqual(["root-file", "bot-file", "current-file"]);
+
+    const textContext = buildMattermostThreadTextContext({
+      posts,
+      triggeringPostId: "reply-2",
+      senderLabelForPost: (post) => (post.user_id === "bot-1" ? "pd_one_bot" : "andy.lin"),
+    });
+    expect(textContext).toContain("Full Mattermost thread context");
+    expect(textContext).toContain("row 1334 dates 2026-05-06, 2026-05-07, 2026-05-29");
+    expect(textContext).toContain("[current message]");
+    expect(textContext.indexOf("Scheduling kickoff")).toBeLessThan(
+      textContext.indexOf("row 1334 dates"),
+    );
+    expect(textContext.indexOf("row 1334 dates")).toBeLessThan(
+      textContext.indexOf("Correct them to June dates"),
+    );
+  });
+
   it("collects root-thread files before the triggering reply files and deduplicates them", () => {
     const result = collectMattermostThreadAttachmentRefs({
       triggeringPost: {
