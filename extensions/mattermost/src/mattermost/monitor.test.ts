@@ -15,6 +15,7 @@ import {
   collectMattermostThreadAttachmentRefs,
   applyMattermostDownloadStatusToManifest,
   buildMattermostThreadAttachmentContext,
+  buildMattermostAgentInputText,
   buildMattermostThreadTextContext,
   collectMattermostThreadPosts,
   resolveMattermostReactionChannelId,
@@ -124,6 +125,39 @@ function mockCallArg(
 }
 
 describe("mattermost thread attachment context", () => {
+  it("keeps activated mention-only messages when thread or attachment context exists", () => {
+    const result = buildMattermostAgentInputText({
+      rawText: "@pd_one_bot",
+      botUsername: "pd_one_bot",
+      threadTextContext: "Full Mattermost thread context\n1. root message",
+      attachmentContext: "Mattermost thread attachment manifest:\n1. file_id=file-1 status=missing",
+    });
+
+    expect(result.bodyText).toBe("[Mattermost thread context and/or attachments provided]");
+    expect(result.bodyTextForAgent).toContain("Full Mattermost thread context");
+    expect(result.bodyTextForAgent).toContain("Mattermost thread attachment manifest");
+    expect(result.hasContextOnlyActivation).toBe(true);
+  });
+
+  it("keeps current instructions before fetched thread and attachment context", () => {
+    const result = buildMattermostAgentInputText({
+      rawText: "@pd_one_bot summarize this",
+      botUsername: "pd_one_bot",
+      mediaPlaceholder: "<media:document>",
+      threadTextContext: "Full Mattermost thread context\n1. root message",
+      attachmentContext: "Mattermost thread attachment manifest:\n1. file_id=file-1 status=downloaded",
+    });
+
+    expect(result.bodyText).toBe("summarize this\n<media:document>");
+    expect(result.bodyTextForAgent.indexOf("summarize this")).toBeLessThan(
+      result.bodyTextForAgent.indexOf("Full Mattermost thread context"),
+    );
+    expect(result.bodyTextForAgent.indexOf("Full Mattermost thread context")).toBeLessThan(
+      result.bodyTextForAgent.indexOf("Mattermost thread attachment manifest"),
+    );
+    expect(result.hasContextOnlyActivation).toBe(false);
+  });
+
   it("orders fetched thread posts chronologically before building file and text context", () => {
     const triggeringPost = {
       id: "reply-2",
@@ -330,6 +364,29 @@ describe("mattermost mention gating", () => {
     expect(account.requireMention).toBe(true);
     expect(decision.shouldRequireMention).toBe(true);
     expect(decision.dropReason).toBe("missing-mention");
+  });
+
+  it("still requires a mention for unmentioned thread replies in oncall mode", () => {
+    const cfg: OpenClawConfig = {
+      channels: {
+        mattermost: {
+          chatmode: "oncall",
+          groupPolicy: "open",
+        },
+      },
+    };
+    const { resolver, decision } = evaluateMentionGateForMessage({
+      cfg,
+      threadRootId: "thread-root-1",
+    });
+
+    expect(decision.shouldRequireMention).toBe(true);
+    expect(decision.dropReason).toBe("missing-mention");
+    const resolverCall = mockCallArg(resolver, -1, "resolveRequireMention") as {
+      groupId?: string;
+    };
+    expect(resolverCall.groupId).toBe("chan-1");
+    expect(resolverCall.groupId).not.toBe("thread-root-1");
   });
 });
 

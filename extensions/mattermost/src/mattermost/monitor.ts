@@ -770,6 +770,59 @@ function appendAttachmentContextToBody(bodyText: string, attachmentContext: stri
     .trim();
 }
 
+export function buildMattermostAgentInputText(params: {
+  rawText: string;
+  botUsername?: string;
+  oncharTriggered?: boolean;
+  oncharText?: string;
+  mediaPlaceholder?: string;
+  threadTextContext?: string;
+  attachmentContext?: string;
+}): { bodyText: string; bodyTextForAgent: string; hasContextOnlyActivation: boolean } {
+  const bodySource = params.oncharTriggered ? params.oncharText ?? params.rawText : params.rawText;
+  const baseText = [bodySource, params.mediaPlaceholder].filter(Boolean).join("\n").trim();
+  const normalizedBody = normalizeMention(baseText, params.botUsername);
+  const hasThreadOrAttachmentContext = Boolean(
+    params.threadTextContext?.trim() || params.attachmentContext?.trim(),
+  );
+  const hasContextOnlyActivation = !normalizedBody && hasThreadOrAttachmentContext;
+  const bodyText = hasContextOnlyActivation
+    ? "[Mattermost thread context and/or attachments provided]"
+    : normalizedBody;
+  const bodyTextForAgent = appendAttachmentContextToBody(
+    appendAttachmentContextToBody(bodyText, params.threadTextContext ?? ""),
+    params.attachmentContext ?? "",
+  );
+  return { bodyText, bodyTextForAgent, hasContextOnlyActivation };
+}
+
+function formatMattermostThreadContextDiagnostic(params: {
+  channelId: string;
+  postId?: string | null;
+  rootId?: string | null;
+  threadPostCount: number;
+  discoveredFileCount: number;
+  downloadedFileCount: number;
+  missingFileCount: number;
+  caveat?: string;
+  contextOnlyActivation: boolean;
+}): string {
+  return [
+    "mattermost thread context:",
+    `channel=${params.channelId}`,
+    `post=${params.postId ?? "unknown"}`,
+    `root=${params.rootId ?? params.postId ?? "unknown"}`,
+    `posts=${params.threadPostCount}`,
+    `files=${params.discoveredFileCount}`,
+    `downloaded=${params.downloadedFileCount}`,
+    `missing=${params.missingFileCount}`,
+    `contextOnlyActivation=${params.contextOnlyActivation}`,
+    params.caveat ? `caveat=${params.caveat}` : undefined,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 function buildMattermostWsUrl(baseUrl: string): string {
   const normalized = normalizeMattermostBaseUrl(baseUrl);
   if (!normalized) {
@@ -1771,19 +1824,38 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           caveat: attachmentRefs.caveat,
         });
         const mediaPlaceholder = buildMattermostAttachmentPlaceholder(mediaList);
-        const bodySource = oncharTriggered ? oncharResult.stripped : rawText;
-        const baseText = [bodySource, mediaPlaceholder].filter(Boolean).join("\n").trim();
-        const bodyText = normalizeMention(baseText, botUsername);
-        const bodyTextForAgent = appendAttachmentContextToBody(
-          appendAttachmentContextToBody(bodyText, threadTextContext),
-          attachmentContext,
-        );
+        const { bodyText, bodyTextForAgent, hasContextOnlyActivation } =
+          buildMattermostAgentInputText({
+            rawText,
+            botUsername,
+            oncharTriggered,
+            oncharText: oncharResult.stripped,
+            mediaPlaceholder,
+            threadTextContext,
+            attachmentContext,
+          });
         if (!bodyText) {
           logVerboseMessage(
             `mattermost: drop group message (empty body after normalization channel=${channelId} sender=${senderId})`,
           );
           return;
         }
+        logVerboseMessage(
+          formatMattermostThreadContextDiagnostic({
+            channelId,
+            postId: post.id,
+            rootId: threadRootId,
+            threadPostCount: attachmentRefs.threadPosts.length,
+            discoveredFileCount: attachmentManifest.length,
+            downloadedFileCount: attachmentManifest.filter((entry) => entry.status === "downloaded")
+              .length,
+            missingFileCount: attachmentManifest.filter(
+              (entry) => entry.status === "missing" || entry.status === "failed",
+            ).length,
+            caveat: attachmentRefs.caveat,
+            contextOnlyActivation: hasContextOnlyActivation,
+          }),
+        );
 
         core.channel.activity.record({
           channel: "mattermost",
