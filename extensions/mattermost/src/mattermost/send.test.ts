@@ -342,6 +342,7 @@ describe("sendMessageMattermost", () => {
 
     await expect(
       sendMessageMattermost("channel:town-square", "attached report", {
+        cfg: TEST_CFG,
         mediaUrl: "file:///tmp/agent-workspace/report.xlsx",
         mediaLocalRoots: ["/tmp/agent-workspace"],
       }),

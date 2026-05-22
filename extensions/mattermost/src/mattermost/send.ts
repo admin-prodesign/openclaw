@@ -480,9 +480,7 @@ export async function sendMessageMattermost(
     } catch (err) {
       uploadError = err instanceof Error ? err : new Error(String(err));
       if (core.logging.shouldLogVerbose()) {
-        logger.debug?.(
-          `mattermost send: media upload failed, falling back to URL text: ${String(err)}`,
-        );
+        logger.debug?.(`mattermost send: media upload failed: ${String(err)}`);
       }
       message = normalizeMessage(message, isHttpUrl(mediaUrl) ? mediaUrl : "");
     }
@@ -497,10 +495,11 @@ export async function sendMessageMattermost(
     message = convertMarkdownTables(message, tableMode);
   }
 
+  if (uploadError) {
+    throw new Error(`Mattermost media upload failed: ${uploadError.message}`);
+  }
+
   if (!message && (!fileIds || fileIds.length === 0)) {
-    if (uploadError) {
-      throw new Error(`Mattermost media upload failed: ${uploadError.message}`);
-    }
     throw new Error("Mattermost message is empty");
   }
 

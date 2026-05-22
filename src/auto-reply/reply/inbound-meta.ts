@@ -416,7 +416,7 @@ export function buildInboundMetaSystemPrompt(
     provider: normalizePromptMetadataString(ctx.Provider),
     surface: normalizePromptMetadataString(ctx.Surface),
     chat_type: chatType ?? (isDirect ? "direct" : undefined),
-    sender_id: isDirect ? safeTrim(ctx.SenderId) : undefined,
+    sender_id: isDirect ? normalizePromptMetadataString(ctx.SenderId) : undefined,
     response_format:
       options?.includeFormattingHints === false ? undefined : resolveInboundFormattingHints(ctx),
   };
