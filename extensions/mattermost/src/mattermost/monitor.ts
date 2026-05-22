@@ -112,6 +112,15 @@ import {
 import { sendMessageMattermost } from "./send.js";
 import { cleanupSlashCommands } from "./slash-commands.js";
 import { deactivateSlashCommands, getSlashCommandState } from "./slash-state.js";
+import {
+  buildMattermostThreadSessionId,
+  compileMattermostThreadSessionContext,
+  resolveMattermostThreadRootId,
+  resolveMattermostThreadSessionStorePath,
+  syncMattermostThreadSession,
+  updateMattermostThreadSessionAttachments,
+  updateMattermostThreadSessionStore,
+} from "./thread-session.js";
 
 export {
   evaluateMattermostMentionGate,
@@ -1728,7 +1737,19 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           replyToMode,
           threadRootId,
         });
-        const { effectiveReplyToId, sessionKey, parentSessionKey } = threadContext;
+        const { effectiveReplyToId } = threadContext;
+        let { sessionKey, parentSessionKey } = threadContext;
+        let mattermostThreadSessionId: string | undefined;
+        if (kind !== "direct") {
+          const rootPostId = resolveMattermostThreadRootId(post);
+          mattermostThreadSessionId = buildMattermostThreadSessionId({
+            accountId: account.accountId,
+            channelId,
+            rootPostId,
+          });
+          sessionKey = mattermostThreadSessionId;
+          parentSessionKey = baseSessionKey;
+        }
         const historyKey = kind === "direct" ? null : sessionKey;
 
         const mentionRegexes = core.channel.mentions.buildMentionRegexes(cfg, route.agentId);
@@ -1807,22 +1828,64 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           triggeringPost: post,
           logger,
         });
-        const threadTextContext = buildMattermostThreadTextContext({
-          posts: attachmentRefs.threadPosts,
-          triggeringPostId: post.id,
-          senderLabelForPost: (threadPost) =>
-            threadPost.id === post.id ? senderName : threadPost.user_id || "unknown",
-        });
         const mediaList = await resolveMattermostMedia(attachmentRefs.fileIds);
         const attachmentManifest = applyMattermostDownloadStatusToManifest({
           manifest: attachmentRefs.manifest,
           mediaList,
           mediaMaxBytes,
         });
-        const attachmentContext = buildMattermostThreadAttachmentContext({
+        let threadTextContext = buildMattermostThreadTextContext({
+          posts: attachmentRefs.threadPosts,
+          triggeringPostId: post.id,
+          senderLabelForPost: (threadPost) =>
+            threadPost.id === post.id ? senderName : threadPost.user_id || "unknown",
+        });
+        let attachmentContext = buildMattermostThreadAttachmentContext({
           manifest: attachmentManifest,
           caveat: attachmentRefs.caveat,
         });
+        const storePath = core.channel.session.resolveStorePath(cfg.session?.store, {
+          agentId: route.agentId,
+        });
+        let mattermostThreadSessionStorePath: string | undefined;
+        if (mattermostThreadSessionId) {
+          mattermostThreadSessionStorePath = resolveMattermostThreadSessionStorePath(storePath);
+          try {
+            const rootPostId = resolveMattermostThreadRootId(post);
+            const updatedStore = await updateMattermostThreadSessionStore(
+              mattermostThreadSessionStorePath,
+              (store) => {
+                const synced = syncMattermostThreadSession({
+                  existing: store.sessions[mattermostThreadSessionId!],
+                  sessionId: mattermostThreadSessionId!,
+                  accountId: account.accountId,
+                  channelId,
+                  rootPostId,
+                  triggerPostId: post.id,
+                  posts: attachmentRefs.threadPosts,
+                  manifest: attachmentRefs.manifest,
+                  caveat: attachmentRefs.caveat,
+                });
+                store.sessions[mattermostThreadSessionId!] = updateMattermostThreadSessionAttachments(
+                  synced.session,
+                  attachmentManifest,
+                );
+                return store;
+              },
+            );
+            const threadSession = updatedStore.sessions[mattermostThreadSessionId];
+            if (threadSession) {
+              threadTextContext = compileMattermostThreadSessionContext(threadSession, {
+                currentPostId: post.id,
+              });
+              attachmentContext = "";
+            }
+          } catch (err) {
+            logVerboseMessage(
+              `mattermost: thread session store unavailable id=${mattermostThreadSessionId} path=${mattermostThreadSessionStorePath} error=${String(err)}`,
+            );
+          }
+        }
         const mediaPlaceholder = buildMattermostAttachmentPlaceholder(mediaList);
         const { bodyText, bodyTextForAgent, hasContextOnlyActivation } =
           buildMattermostAgentInputText({
@@ -1882,7 +1945,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
           sender: { name: senderName, id: senderId },
         });
         let combinedBody = body;
-        if (historyKey) {
+        if (historyKey && !mattermostThreadSessionId) {
           const channelHistory = createChannelHistoryWindow({ historyMap: channelHistories });
           combinedBody = channelHistory.buildPendingContext({
             historyKey,
@@ -1906,7 +1969,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
         const mediaPayload = buildAgentMediaPayload(mediaList);
         const commandBody = rawText.trim();
         const inboundHistory =
-          historyKey && historyLimit > 0
+          historyKey && historyLimit > 0 && !mattermostThreadSessionId
             ? createChannelHistoryWindow({ historyMap: channelHistories }).buildInboundHistory({
                 historyKey,
                 limit: historyLimit,
@@ -1962,10 +2025,6 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
                 normalizeEntry: normalizeMattermostAllowEntry,
               })
             : null;
-
-        const storePath = core.channel.session.resolveStorePath(cfg.session?.store, {
-          agentId: route.agentId,
-        });
 
         const previewLine = bodyText.slice(0, 200).replace(/\n/g, "\\n");
         logVerboseMessage(
