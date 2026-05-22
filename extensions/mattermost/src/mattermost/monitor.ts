@@ -28,6 +28,7 @@ import {
 } from "./accounts.js";
 import {
   createMattermostClient,
+  fetchMattermostFileInfo,
   fetchMattermostMe,
   fetchMattermostThread,
   normalizeMattermostBaseUrl,
@@ -510,9 +511,11 @@ export type MattermostThreadAttachmentManifestEntry = {
   fileId: string;
   sourcePostId: string;
   filename?: string;
+  sizeBytes?: number;
   status?: "pending" | "downloaded" | "missing" | "failed";
   localPath?: string;
   contentType?: string;
+  failureReason?: string;
 };
 
 export function collectMattermostThreadAttachmentRefs(params: {
@@ -553,6 +556,7 @@ export function collectMattermostThreadAttachmentRefs(params: {
 export function applyMattermostDownloadStatusToManifest(params: {
   manifest: MattermostThreadAttachmentManifestEntry[];
   mediaList: MattermostMediaInfo[];
+  mediaMaxBytes?: number;
 }): MattermostThreadAttachmentManifestEntry[] {
   const mediaByFileId = new Map(
     params.mediaList
@@ -562,7 +566,17 @@ export function applyMattermostDownloadStatusToManifest(params: {
   return params.manifest.map((entry) => {
     const media = mediaByFileId.get(entry.fileId);
     if (!media) {
-      return { ...entry, status: "missing" };
+      const limitText = params.mediaMaxBytes
+        ? ` (media limit ${Math.round(params.mediaMaxBytes / 1024 / 1024)} MB)`
+        : "";
+      const sizeText = entry.sizeBytes
+        ? `; file size ${Math.round(entry.sizeBytes / 1024 / 1024)} MB`
+        : "";
+      return {
+        ...entry,
+        status: "missing",
+        failureReason: `download unavailable or exceeded media limit${limitText}${sizeText}`,
+      };
     }
     return {
       ...entry,
@@ -595,6 +609,12 @@ export function buildMattermostThreadAttachmentContext(params: {
       if (entry.contentType) {
         parts.push(`content_type=${entry.contentType}`);
       }
+      if (entry.sizeBytes !== undefined) {
+        parts.push(`size_bytes=${entry.sizeBytes}`);
+      }
+      if (entry.failureReason) {
+        parts.push(`failure_reason=${entry.failureReason}`);
+      }
       if (entry.localPath) {
         parts.push(`local_path=${entry.localPath}`);
       }
@@ -619,19 +639,43 @@ async function resolveMattermostThreadAttachments(params: {
   caveat?: string;
 }> {
   const rootId = params.triggeringPost.root_id?.trim();
+  const enrich = async (refs: ReturnType<typeof collectMattermostThreadAttachmentRefs>) => {
+    const manifest = await Promise.all(
+      refs.manifest.map(async (entry) => {
+        try {
+          const info = await fetchMattermostFileInfo(params.client, entry.fileId);
+          return {
+            ...entry,
+            filename: info.name ?? entry.filename,
+            contentType: info.mime_type ?? entry.contentType,
+            sizeBytes: typeof info.size === "number" ? info.size : entry.sizeBytes,
+          };
+        } catch (err) {
+          params.logger.debug?.(
+            `mattermost: failed to fetch file info ${entry.fileId}: ${String(err)}`,
+          );
+          return { ...entry, failureReason: `file info unavailable: ${String(err)}` };
+        }
+      }),
+    );
+    return { ...refs, manifest };
+  };
+
   if (!rootId) {
-    return collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost });
+    return await enrich(collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost }));
   }
   try {
     const thread = await fetchMattermostThread(params.client, rootId);
-    return collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost, thread });
+    return await enrich(collectMattermostThreadAttachmentRefs({ triggeringPost: params.triggeringPost, thread }));
   } catch (err) {
     const caveat = `Mattermost thread fetch failed for root post ${rootId}: ${String(err)}`;
     params.logger.debug?.(`mattermost: ${caveat}`);
-    return collectMattermostThreadAttachmentRefs({
-      triggeringPost: params.triggeringPost,
-      caveat,
-    });
+    return await enrich(
+      collectMattermostThreadAttachmentRefs({
+        triggeringPost: params.triggeringPost,
+        caveat,
+      }),
+    );
   }
 }
 
@@ -1630,6 +1674,7 @@ export async function monitorMattermostProvider(opts: MonitorMattermostOpts = {}
         const attachmentManifest = applyMattermostDownloadStatusToManifest({
           manifest: attachmentRefs.manifest,
           mediaList,
+          mediaMaxBytes,
         });
         const attachmentContext = buildMattermostThreadAttachmentContext({
           manifest: attachmentManifest,

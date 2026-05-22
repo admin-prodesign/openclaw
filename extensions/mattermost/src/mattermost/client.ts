@@ -192,6 +192,13 @@ export async function fetchMattermostThread(
   return MattermostThreadSchema.parse(raw);
 }
 
+export async function fetchMattermostFileInfo(
+  client: MattermostClient,
+  fileId: string,
+): Promise<MattermostFileInfo> {
+  return await client.request<MattermostFileInfo>(`/files/${encodeURIComponent(fileId)}/info`);
+}
+
 export async function fetchMattermostUserByUsername(
   client: MattermostClient,
   username: string,

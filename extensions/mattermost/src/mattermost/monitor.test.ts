@@ -13,6 +13,7 @@ import {
   MattermostRetryableInboundError,
   processMattermostReplayGuardedPost,
   collectMattermostThreadAttachmentRefs,
+  applyMattermostDownloadStatusToManifest,
   buildMattermostThreadAttachmentContext,
   resolveMattermostReactionChannelId,
   resolveMattermostEffectiveReplyToId,
@@ -188,6 +189,29 @@ describe("mattermost thread attachment context", () => {
     expect(context).toContain("missing");
     expect(context).toContain("Mattermost thread fetch failed: 403 forbidden");
     expect(context).toContain("Do not answer document-grounded requests from general memory");
+  });
+
+  it("adds a visible failure reason when an attachment is discovered but not downloaded", () => {
+    const manifest = applyMattermostDownloadStatusToManifest({
+      manifest: [
+        {
+          fileId: "large-step",
+          sourcePostId: "reply-2",
+          filename: "19LH-3-tong-MOLD design.stp",
+          sizeBytes: 53_916_823,
+        },
+      ],
+      mediaList: [],
+      mediaMaxBytes: 250 * 1024 * 1024,
+    });
+    const context = buildMattermostThreadAttachmentContext({ manifest });
+
+    expect(manifest[0]?.status).toBe("missing");
+    expect(manifest[0]?.failureReason).toContain("media limit 250 MB");
+    expect(manifest[0]?.failureReason).toContain("file size 51 MB");
+    expect(context).toContain("filename=19LH-3-tong-MOLD design.stp");
+    expect(context).toContain("size_bytes=53916823");
+    expect(context).toContain("failure_reason=download unavailable or exceeded media limit");
   });
 });
 
